@@ -1958,13 +1958,18 @@ let mmBase=null;
 function buildMinimap(){
  mmBase=document.createElement("canvas");mmBase.width=128;mmBase.height=128;
  const g=mmBase.getContext("2d");
- g.filter="saturate(0.55) brightness(0.8)"; // приглушённая база — маркеры читаются
+ const im=g.createImageData(128,128),d=im.data; // ImageData вместо 16к fillRect — было 1.4с фриза
  for(let y=0;y<128;y++)for(let x=0;x<128;x++){
   const tx=Math.floor(x*MAPW/128),ty=Math.floor(y*MAPH/128);
   let b=biomeAt(tx,ty);
   if(b===BIOME.VOLCANO&&lavaAt(tx,ty))b=BIOME.LAVA;
-  g.fillStyle=BIOME_COL[b];g.fillRect(x,y,1,1);
+  const c=BIOME_RGB[b][1]; // базовый стоп биома
+  const i=(y*128+x)*4;
+  d[i]=c[0];d[i+1]=c[1];d[i+2]=c[2];d[i+3]=255;
  }
+ g.putImageData(im,0,0);
+ g.filter="saturate(0.55) brightness(0.8)"; // приглушённая база — маркеры читаются
+ g.drawImage(mmBase,0,0);
  g.filter="none";
 }
 function updateStartStats(){
