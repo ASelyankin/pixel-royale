@@ -145,6 +145,7 @@
   <button class="btn" id="joinbtn" style="font-size:12px;padding:6px 12px">Войти по коду</button><br>
   <span id="netstatus" style="color:#8de04a"></span><br>
   <span style="color:#8a8272">Карта и зона общие; враги и боты у каждого свои. Соединение напрямую между браузерами.</span></p>
+  <p class="stats" id="buildrow" style="margin-top:8px"></p>
 </div></div>
 
 <script>
@@ -1084,7 +1085,7 @@ addEventListener("resize",resize);resize();
 const SLOT_BASE=3,SLOT_MAX=6,SLOT_COST=6;
 let save={};
 try{save=JSON.parse(localStorage.getItem("pixelroyale"))||{};}catch(e){save={};}
-save.slots=save.slots||0;save.wins=save.wins||0;save.matches=save.matches||0;save.best=save.best||99;save.shards=save.shards||0;save.disc=save.disc||{};
+ save.slots=save.slots||0;save.wins=save.wins||0;save.matches=save.matches||0;save.best=save.best||99;save.shards=save.shards||0;save.disc=save.disc||{};save.builds=save.builds||{};save.buildSel=save.buildSel||"";
 function persist(){try{
  const fresh=JSON.parse(localStorage.getItem("pixelroyale"))||{}; // мердж: две вкладки не затирают друг друга
  for(const k of ["wins","matches"])save[k]=Math.max(save[k]||0,fresh[k]||0);
@@ -1098,6 +1099,7 @@ const BOT_NAMES=["Тень","Клык","Гром","Ворон","Камень","�
 let chars=[],enemies=[],projs=[],clouds=[],orbs=[],drops=[],parts=[],floats=[],dmgInds=[];
 let player=null,gameOn=false,paused=false,matchEnded=false,cam={x:0,y:0},zone=null,deathLog=[],matchTime=0;
 let pendingPerks=0,pendingSkill=null,skillTimer=null,hintIdx=0,zoneWarned=false,hintElite=false,hintDrop=false,hintPerk=false;
+let eventCd=20,eventActive=null;
 let shake=0,hitstop=0,hurtFlash=0,heartT=0,spawnT=0;
 const feedEl=document.getElementById("feed");
 const keys={},mouse={x:0,y:0,down:false};
@@ -1247,6 +1249,37 @@ function updateZone(dt){
    spawnEnemyAt(clamp(player.x+Math.cos(a2)*d2,TILE*2,WORLD-TILE*2),clamp(player.y+Math.sin(a2)*d2,TILE*2,WORLD-TILE*2));
   }
  }
+ // ивенты: аирдроп и золотой беглец — раз в ~30с со 2-й стадии
+ if(gameOn&&zone.stage>=1&&!eventActive){
+  eventCd-=dt;
+  if(eventCd<=0){
+   eventCd=30+R()*15;
+   if(R()<0.5){ // аирдроп
+    const a2=R()*TAU,d2=R()*zone.curR*0.7;
+    eventActive={t:"drop",x:clamp(zone.curX+Math.cos(a2)*d2,TILE*3,WORLD-TILE*3),y:clamp(zone.curY+Math.sin(a2)*d2,TILE*3,WORLD-TILE*3),life:40};
+    addFeed("📦 Аирдроп! Скил и хил на миникарте",true);sfx("drop");
+   }else{ // золотой беглец: элитный враг убегает, лут жирный
+    const t5=byBiome[BIOME_KEYS[Math.max(0,biomeAt(Math.floor(player.x/TILE),Math.floor(player.y/TILE))-1)]].find(e=>e.tier===5)||byBiome.plains[39];
+    enemies.push({t:t5,name:"ЗОЛОТОЙ БЕГЛЕЦ",x:clamp(player.x+Math.cos(R()*TAU)*700,TILE*2,WORLD-TILE*2),
+     y:clamp(player.y+Math.sin(R()*TAU)*700,TILE*2,WORLD-TILE*2),hp:t5.hp*2.5,maxhp:t5.hp*2.5,dmg:t5.dmg,
+     r:t5.size+8,spd:t5.speed*1.4,st:{},atkCd:9,wt:0,wa:0,flash:0,named:true,runner:true,gold:true,pounceT:0,pounceCd:0,aimT:0});
+    eventActive={t:"runner",life:45};
+    addFeed("⭐ ЗОЛОТОЙ БЕГЛЕЦ! Убей — жирный скил",true);sfx("drop");
+   }
+  }
+ }else if(eventActive&&eventActive.t==="runner"){
+  const re=enemies.find(e=>e.runner);
+  if(!re){eventActive=null;eventCd=25;}else eventActive.life-=dt>0?dt:0;
+  if(eventActive&&(eventActive.life<=0)){enemies=enemies.filter(e=>!e.runner);eventActive=null;eventCd=25;addFeed("Беглец ушёл...");} // таймаут
+ }
+ // аирдроп: подбор
+ if(eventActive&&eventActive.t==="drop"&&player&&!player.dead&&dist2(player.x,player.y,eventActive.x,eventActive.y)<40*40){
+  const sk=makeSkill(1.5);
+  drops.push({x:eventActive.x,y:eventActive.y,skill:sk,t:0});
+  orbs.push({x:eventActive.x+20,y:eventActive.y,val:-1,t:0,heal:0.25});
+  addFeed("📦 Аирдроп собран: "+sk.name,true);sfx("drop");
+  eventActive=null;eventCd=30;
+ }
  let zoneTick=0;
  for(const c of chars){if(c.dead)continue;
   const d=Math.hypot(c.x-zone.curX,c.y-zone.curY);
@@ -1267,6 +1300,7 @@ function desiredTier(){
  const pl=player&&!player.dead?player.lv:avg;
  return clamp(Math.round(Math.max(pl/4,avg/5)),0,4);
 }
+function spawnEnemyAt(x,y){spawnEnemy(x,y);}
 function spawnEnemy(x,y){
  const minR=zone.stage>=6?300:Math.max(W,H)/ZOOM/2+250;
  const maxR=zone.stage>=6?700:minR+580;
@@ -1337,6 +1371,15 @@ function killEnemy(e,killer){
   shake=Math.max(shake,4);hitstop=Math.max(hitstop,0.05);
   if(!save.disc[e.t.id]){save.disc[e.t.id]=1;addFeed("Новый вид: "+e.t.name+"!",true);persist();}
  }
+ // золотой беглец: гарантированный жирный лут
+ if(e.runner){
+  let sk=makeSkill(2.5);while(sk.rar<2)sk=makeSkill(2.5);
+  drops.push({x:e.x,y:e.y,skill:sk,t:0});
+  orbs.push({x:e.x+15,y:e.y,val:-1,t:0,heal:0.2});orbs.push({x:e.x-15,y:e.y,val:-1,t:0,heal:0.2});
+  addFeed("⭐ Беглец убит — забирай лут!",true);
+  if(eventActive&&eventActive.t==="runner"){eventActive=null;eventCd=25;}
+  if(killer&&killer.isPlayer)for(let k=0;k<3;k++)spawnEnemy(); // месть толпой
+ }
  sfxAt("kill",e.x,e.y);
 }
 function gainXp(c,amt){
@@ -1378,6 +1421,10 @@ function killChar(c,killer,cause){
  c.place=chars.filter(x=>!x.dead).length+1;
  deathLog.push({name:c.name,place:c.place,kills:c.kills,lv:c.lv,cause:killer?(killer.name||cause||"монстр"):cause||"монстр",me:c.isPlayer});
  if(killer)killer.kills++;
+ // корона лидера: убивший коронованного получает жирный опыт
+ if(c.crown&&killer){c.crown=false;
+  if(killer.isPlayer)orbs.push({x:c.x,y:c.y,val:Math.round(40+killer.lv*12),t:0});
+  addFeed("👑 Корона перешла к "+killer.name+"!",true);}
  // фильтр фида: смерти далеко от игрока — шум, не выводим
  const near=player&&!player.dead&&dist2(c.x,c.y,player.x,player.y)<900*900;
  if(c.isPlayer||near||(killer&&killer.isPlayer))
@@ -1576,13 +1623,19 @@ function updateEnemies(dt){
   if(eb===BIOME.LAVA){e.hp-=12*dt;if(e.hp<=0){killEnemy(e,null);continue;}}
   let tgt=null,td=1e9;
   for(const c of chars){if(c.dead||c.hidden&&td>130*130)continue;const d=dist2(c.x,c.y,e.x,e.y);if(d<td){td=d;tgt=c;}}
+  if(e.runner&&player&&!player.dead){tgt=player;td=dist2(player.x,player.y,e.x,e.y);} // беглец всегда знает, откуда бежать
   if(tgt&&td<420*420){
    if(!e.named){e.named=true;floats.push({x:e.x,y:e.y-e.r-12,t:0,txt:e.t.name,col:"#ffd76a",sz:9});
     if(e.t.tier>=4&&!hintElite){hintElite=true;addFeed("Золотая искра — элитный враг: опаснее, но лут жирнее",true);}}
    const dx=tgt.x-e.x,dy=tgt.y-e.y,l=Math.hypot(dx,dy)||1;
    const dist=td; // квадрат дистанции до цели
    const ranged=e.t.shape==="flyer"||e.t.shape==="spirit";
-   if(ranged){
+   if(e.runner){ // золотой беглец убегает
+    const nx=e.x-dx/l*spd*1.15*dt,ny=e.y-dy/l*spd*1.15*dt;
+    if(!blocked(nx,e.y,e.r))e.x=nx;if(!blocked(e.x,ny,e.r))e.y=ny;
+    if(e.atkCd<=0&&R()<0.3){e.atkCd=2.2;aoeBurst(e,e.x,e.y,60,e.dmg*0.5,"arcane",null);} // огрызается
+   }
+   else if(ranged){
     if(dist>300*300){const nx=e.x+dx/l*spd*dt,ny=e.y+dy/l*spd*dt;if(!blocked(nx,e.y,e.r))e.x=nx;if(!blocked(e.x,ny,e.r))e.y=ny;}
     else if(dist<180*180){const nx=e.x-dx/l*spd*dt,ny=e.y-dy/l*spd*dt;if(!blocked(nx,e.y,e.r))e.x=nx;if(!blocked(e.x,ny,e.r))e.y=ny;}
     if(e.aimT>0){e.aimT-=dt;
@@ -2028,6 +2081,30 @@ function updateStartStats(){
   `Осколки: ${save.shards} · Слотов скилов: ${SLOT_BASE+save.slots} (${save.slots?"+"+save.slots+" bonus":"базовые 3"})`+
   (save.slots<SLOT_MAX-SLOT_BASE?` · до слота: ${save.shards%SLOT_COST||SLOT_COST}/${SLOT_COST} осколков`:"")+
   `<br>Открыто видов: ${Object.keys(save.disc).length}/200`;
+ renderBuilds();
+}
+// ---------- стартовые билды за осколки (второй слой меты) ----------
+const BUILDS=[
+ {id:"vet",name:"ВЕТЕРАН",cost:10,desc:"+15% HP и урон",apply:p=>{p.perks.push({tier:3,stat:"hp",val:15,name:"Ветеран",desc:""});p.perks.push({tier:3,stat:"dmg",val:15,name:"Ветеран",desc:""});}},
+ {id:"glass",name:"СТЕКЛО",cost:12,desc:"флаг Стеклянная пушка с 1 лвл",apply:p=>{p.flags.glass=1;}},
+ {id:"trap",name:"ЛОВЕЦ",cost:12,desc:"флаг Жадность (лут и опыт ×1.15+)",apply:p=>{p.flags.greed=1;}}
+];
+function renderBuilds(){
+ const row=document.getElementById("buildrow");if(!row)return;
+ let html="<b style='color:#ffd76a'>Стартовые билды</b> (покупаются осколками, выбор сохраняется):<br>";
+ for(const b of BUILDS){
+  const owned=save.builds&&save.builds[b.id],sel=save.buildSel===b.id;
+  const col=owned?(sel?"#ffd76a":"#9fe08a"):(save.shards>=b.cost?"#b7ad96":"#6a6258");
+  html+=`<span data-build="${b.id}" style="cursor:pointer;display:inline-block;margin:3px;padding:3px 8px;border:1px solid ${sel?"#ffd76a":"#4a3a28"};background:${sel?"#2e2314":"#16120d"};color:${col}">${b.name} ${owned?(sel?"✓":""):"· "+b.cost+"💎"}</span>`;
+ }
+ row.innerHTML=html;
+ for(const el of row.querySelectorAll("[data-build]"))el.addEventListener("click",()=>{
+  const b=BUILDS.find(x=>x.id===el.dataset.build);
+  if(save.builds&&save.builds[b.id]){save.buildSel=save.buildSel===b.id?"":b.id;}
+  else if(save.shards>=b.cost){save.shards-=b.cost;save.builds=save.builds||{};save.builds[b.id]=1;save.buildSel=b.id;
+   updateStartStats();persist();}
+  renderBuilds();persist();
+ });
 }
 function startMatch(forceSeed){
  if(forceSeed!==undefined){SEED=forceSeed;R=mulberry32(SEED+1);} // онлайн: общий сид и одинаковая последовательность R
@@ -2040,9 +2117,13 @@ function startMatch(forceSeed){
  closeModal();pendingPerks=0;pendingSkill=null;paused=false;matchEnded=false;
  feedEl.innerHTML="";for(const k in keys)keys[k]=false;mouse.down=false;
  spawnT=0;shake=0;hitstop=0;hurtFlash=0;hintIdx=0;zoneWarned=false;lastAlive=-1;dmgInds=[];renderBroken=false;
+ eventCd=20;eventActive=null;
  treeHp.clear();
  chars=[];enemies=[];projs=[];clouds=[];orbs=[];drops=[];parts=[];floats=[];deathLog=[];matchTime=0;
  for(let i=0;i<50;i++)chars.push(makeChar(i===0?"ВЫ":BOT_NAMES[i%BOT_NAMES.length]+"-"+(10+i),i===0,i));
+ // стартовый билд из меты
+ const selB=BUILDS.find(b=>b.id===save.buildSel);
+ if(selB&&save.builds&&save.builds[selB.id]){selB.apply(chars[0]);chars[0].stat=calcStats(chars[0]);chars[0].hp=chars[0].stat.maxhp;}
  // разводим бойцов: никто не спавнится ближе 500px к другому
  for(let k=0;k<40;k++){
   let clash=false;
@@ -2251,7 +2332,7 @@ buildMinimap();
 buildVignette();
 
 // ---------- главный цикл ----------
-let lastT=0,lastFrameT=0,renderBroken=false,lastRaf=0;
+let lastT=0,lastFrameT=0,renderBroken=false,lastRaf=0,leadT=0;
 const FRAME_MIN=TOUCH?33:0; // на тач-устройствах 30fps — батарея и запас производительности
 function loopStep(t){
  try{
@@ -2307,6 +2388,13 @@ function update(dt){
  }
  shake=Math.max(0,shake-dt*30);
  hurtFlash=Math.max(0,hurtFlash-dt);
+ // корона лидера-бота: пересчёт раз в 2с
+ leadT-=dt;
+ if(leadT<=0){leadT=2;
+  let lead=null;
+  for(const c of chars){if(c.dead||c.isPlayer)continue;if(c.kills>0&&(!lead||c.kills>lead.kills))lead=c;}
+  for(const c of chars)c.crown=c===lead;
+ }
  // сердцебиение при низком HP
  if(player&&!player.dead&&player.hp<player.stat.maxhp*0.3){
   heartT-=dt;if(heartT<=0){heartT=0.8;sfx("heart");}
@@ -2400,6 +2488,14 @@ function render(){
   ctx.globalAlpha=1;ctx.fillStyle="#7fe04a";ctx.fillRect(o.x-s-1,o.y-s-1,s*2+2,s*2+2);
   ctx.fillStyle="#eaffdc";ctx.fillRect(o.x-1,o.y-1,2,2);}
  ctx.globalCompositeOperation="source-over";
+ // аирдроп: ящик со световым столбом + мигающая метка
+ if(eventActive&&eventActive.t==="drop"){
+  ctx.globalAlpha=0.25;ctx.fillStyle="#8de04a";ctx.fillRect(eventActive.x-3,eventActive.y-60,6,60);
+  ctx.globalAlpha=1;ctx.fillStyle="#7a5a32";ctx.fillRect(eventActive.x-10,eventActive.y-10,20,12);
+  ctx.fillStyle="#a87c3e";ctx.fillRect(eventActive.x-10,eventActive.y-10,20,3);
+  ctx.strokeStyle="#000";ctx.lineWidth=1;ctx.strokeRect(eventActive.x-10,eventActive.y-10,20,12);
+  if(Math.sin(matchTime*8)>0){ctx.fillStyle="#fff";ctx.fillRect(eventActive.x-6,eventActive.y-6,12,2);}
+ }
  // облака: враждебные игроку — с красной кромкой
  for(const cl of clouds){
   ctx.globalAlpha=0.3;ctx.fillStyle=cl.col;ctx.beginPath();ctx.arc(cl.x,cl.y,cl.r,0,TAU);ctx.fill();ctx.globalAlpha=1;
@@ -2434,7 +2530,10 @@ const ANIM={beast:{f:9,a:2,waddle:1},blob:{f:5,a:1,squash:1},insect:{f:16,a:1.5}
    ctx.fillStyle=`rgba(255,80,60,${(pulse+0.3).toFixed(2)})`;ctx.fillRect(e.x-3,e.y-3,6,6);
   }
   // кольцо элиты вместо мигающей искры — читается мгновенно
-  if(e.t.tier>=4){ctx.strokeStyle="rgba(255,215,106,0.6)";ctx.lineWidth=1.5;
+  if(e.gold){ctx.strokeStyle="#ffd23c";ctx.lineWidth=2;
+   ctx.beginPath();ctx.ellipse(e.x,e.y+e.r*0.7,sz*0.55,5,0,0,TAU);ctx.stroke();
+   ctx.fillStyle="#ffd23c";ctx.fillRect(e.x-2,e.y-sz/2-6,4,3);}
+  else if(e.t.tier>=4){ctx.strokeStyle="rgba(255,215,106,0.6)";ctx.lineWidth=1.5;
    ctx.beginPath();ctx.ellipse(e.x,e.y+e.r*0.7,sz*0.45,4,0,0,TAU);ctx.stroke();}
   if(e.hp<e.maxhp)drawBar(e.x-12,e.y-e.r-10,24,clamp(e.hp/e.maxhp,0,1),"#d24a3a");
  }
@@ -2459,6 +2558,7 @@ const ANIM={beast:{f:9,a:2,waddle:1},blob:{f:5,a:1,squash:1},insect:{f:16,a:1.5}
    ctx.font='bold 10px monospace';ctx.strokeStyle="rgba(0,0,0,0.9)";ctx.lineWidth=3;ctx.textAlign="center";
    ctx.strokeText("ВЫ",c.x,c.y-16);ctx.fillStyle="#ffd76a";ctx.fillText("ВЫ",c.x,c.y-16);
   }else if(c.hpShowT>0&&c.hp<c.stat.maxhp)drawBar(c.x-12,c.y-22,24,clamp(c.hp/c.stat.maxhp,0,1),"#e0a03a");
+  if(c.crown&&!c.dead){ctx.fillStyle="#ffd23c";ctx.fillRect(c.x-4,c.y-22+bob,8,3);ctx.fillRect(c.x-4,c.y-25+bob,2,3);ctx.fillRect(c.x-1,c.y-26+bob,2,4);ctx.fillRect(c.x+2,c.y-25+bob,2,3);}
  }
  // лучи (двухслойные)
  if(player&&player.beamVis){
@@ -2671,6 +2771,12 @@ function drawMinimap(){
  mmCtx.fillStyle="#000";mmCtx.fillRect(player.x*sc-3,player.y*sc-3,6,6);
  mmCtx.fillStyle="#ffd76a";
  mmCtx.fillRect(player.x*sc-2,player.y*sc-2,4,4);
+ // метки ивентов
+ if(eventActive&&eventActive.t==="drop"&&Math.sin(matchTime*8)>0){
+  mmCtx.fillStyle="#8de04a";mmCtx.fillRect(eventActive.x*sc-3,eventActive.y*sc-3,6,6);}
+ if(eventActive&&eventActive.t==="runner"){
+  const re=enemies.find(e=>e.runner);
+  if(re){mmCtx.fillStyle=Math.sin(matchTime*10)>0?"#ffd23c":"#ff9d3c";mmCtx.fillRect(re.x*sc-3,re.y*sc-3,6,6);}}
  if(off>0){mmCtx.fillStyle="rgba(255,80,60,0.8)";mmCtx.font="9px monospace";mmCtx.textAlign="left";mmCtx.fillText("+"+off,3,158);}
  mmCtx.strokeStyle="#000";mmCtx.strokeRect(0.5,0.5,163,163);
 }
