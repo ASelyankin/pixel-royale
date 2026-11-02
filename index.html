@@ -93,6 +93,7 @@
 </div>
 
 <div id="topright" class="panel">
+  <span id="netchip" style="display:none;background:rgba(10,8,6,.7);border:1px solid #000;box-shadow:0 0 0 1px #a87c3e;padding:3px 10px;color:#8de04a;font-size:13px"></span><br>
   <div id="alive">Живых: 50</div>
   <div id="zoneinfo">Зона: —</div>
   <div id="place" style="color:#9fe08a"></div>
@@ -112,7 +113,10 @@
 </div></div>
 
 <div class="modal" id="pausemodal"><div class="box">
-  <h2>ПАУЗА</h2><p>Нажми <b>Esc</b>, чтобы продолжить · <b>M</b> — звук вкл/выкл</p>
+  <h2>ПАУЗА</h2>
+  <p>Esc — продолжить · M — звук</p>
+  <button class="btn" id="resumebtn">ПРОДОЛЖИТЬ</button>
+  <button class="btn" id="menubtn">В МЕНЮ</button>
 </div></div>
 
 <div class="modal" id="overmodal"><div class="box" id="overbox"></div></div>
@@ -721,56 +725,74 @@ function renderChunk(cx,cy){
   distOther[ty*12+tx]=bd;otherB[ty*12+tx]=ob;
   distLand[ty*12+tx]=b===BIOME.WATER?dl:9;
  }
- // --- земля: ImageData по блокам 2×2 ---
- for(let by=0;by<128;by++)for(let bx=0;bx<128;bx++){
-  const wx=cx*256+bx*2,wy=cy*256+by*2;
-  const tix=(bx>>4)+2,tiy=(by>>4)+2;
-  let b=bGrid[tiy*12+tix];
-  let v=terrGrid[((by*2>>2)+1)*65+((bx*2>>2)+1)];
-  v+=(BAYER[(bx&3)|((by&3)<<2)]/16-0.5)*0.055;
-  v+=(midGrid[((by*2>>3)+1)*33+((bx*2>>3)+1)]-0.5)*0.12; // мягкие поляны среднего масштаба
-  const m=macGrid[((by*2>>3)+1)*33+((bx*2>>3)+1)];
+ // --- земля: предрасчёт на тайл + дизер двух тонов на блок (быстрый чанк) ---
+ const tR=new Float32Array(64),tG=new Float32Array(64),tB2=new Float32Array(64);
+ const tR2=new Float32Array(64),tG2=new Float32Array(64),tB22=new Float32Array(64);
+ const tMode=new Uint8Array(64),tSpark=new Uint8Array(64); // 0 обычный, 1 берег, 2 глубина, 3 лава
+ for(let iy=0;iy<8;iy++)for(let ix=0;ix<8;ix++){
+  const tix=ix+2,tiy=iy+2,ti=iy*8+ix;
+  const b=bGrid[tiy*12+tix];
+  const mg=midGrid[((iy*2)+1)*33+((ix*2)+1)];
+  const m=macGrid[((iy*2)+1)*33+((ix*2)+1)];
+  let v=terrGrid[((iy*4)+2)*65+((ix*4)+2)]+(mg-0.5)*0.12;
   const mul=0.82+0.30*m;
-  let r,gg2,bb;
+  let r=0,gg=0,bb=0,r2=0,g2=0,b22=0,mode=0;
+  const wx=cx*256+ix*TILE+16,wy=cy*256+iy*TILE+16;
   if(b===BIOME.LAVA){
    const n=lavaN(wx*0.02,wy*0.02,2)*0.5+0.5;
-   if(n>0.62){r=70;gg2=32;bb=20;}
-   else if(n>0.5){r=242;gg2=161;bb=60;}
+   if(n>0.62){r=70;gg=32;bb=20;}
+   else if(n>0.5){r=242;gg=161;bb=60;}
    else{const c1=rampColor(BIOME_RGB[6],v),c2=rampColor2(BIOME_RGB[6],clamp(v+0.25,0,1));
-    r=lerp(c1[0],c2[0],v);gg2=lerp(c1[1],c2[1],v);bb=lerp(c1[2],c2[2],v);}
+    r=lerp(c1[0],c2[0],v);gg=lerp(c1[1],c2[1],v);bb=lerp(c1[2],c2[2],v);}
+   mode=3;
   }else if(b===BIOME.WATER){
    const dl=distLand[tiy*12+tix];
-   if(dl<=1){ // берег: мокрый край + пена-дизер, без белых заливок
-    const foam=(v-0.5)+(BAYER[(bx&3)|((by&3)<<2)]/16-0.5)*0.5;
-    if(foam>0.15){r=238;gg2=246;bb=248;}
-    else if(foam>-0.25){r=159;gg2=196;bb=214;}
-    else{r=110;gg2=160;bb=185;}
+   if(dl<=1){mode=1; // берег: тон A — мокрый, тон B — пена (дизер на блоках)
+    r=159;gg=196;bb=214;r2=238;g2=246;b22=248;
    }else{
-    const c=rampColor(BIOME_RGB[0],clamp((dl-1)/5,0,1));
-    r=c[0];gg2=c[1];bb=c[2];
-    if(dl<=2&&(BAYER[(bx&3)|((by&3)<<2)]/16)>0.9){r=210;gg2=228;bb=236;} // редкая пена
+    mode=2;
+    const c=rampColor(BIOME_RGB[0],clamp((dl-1)/5,0,1));r=c[0];gg=c[1];bb=c[2];
+    tSpark[ti]=(dl<=2&&h2(ix*3+cx,iy*3+cy)>0.6)?1:0;
+    r2=Math.min(255,r+50);g2=Math.min(255,gg+50);b22=Math.min(255,bb+50);
    }
   }else{
    let pal=BIOME_RGB[b];
    // переходы биомов: дизер-полоса с рваным шумным краем
    const db=distOther[tiy*12+tix];
    if(db<2.5){
-    const mixT=(1-(db-0.5)/2.5)+(v-0.5)*0.8+(BAYER[(bx&3)|((by&3)<<2)]/16-0.5)*0.35;
-    if(mixT>0.5)pal=BIOME_RGB[otherB[tiy*12+tix]];
+    const mixT=(1-(db-0.5)/2.5)+(v-0.5)*0.8;
+    if(mixT>0.35)pal=BIOME_RGB[otherB[tiy*12+tix]];
    }
-   const c=rampColor(pal,v);
-   r=c[0];gg2=c[1];bb=c[2];
+   const cA=rampColor(pal,clamp(v-0.05,0,1)),cB=rampColor(pal,clamp(v+0.05,0,1));
+   r=cA[0];gg=cA[1];bb=cA[2];r2=cB[0];g2=cB[1];b22=cB[2];
    // hue-сдвиг по макро-свету: светлые пятна теплее, тёмные холоднее
-   if(m>0.5){const k=(m-0.5)*0.7;r=lerp(r,r*1.14+8,k);gg2=lerp(gg2,gg2*1.06,k);bb=lerp(bb,bb*0.9,k);}
-   else{const k=(0.5-m)*0.7;r=lerp(r,r*0.86,k);gg2=lerp(gg2,gg2*1.02,k);bb=lerp(bb,bb*1.1,k);}
+   if(m>0.5){const k=(m-0.5)*0.7;r=lerp(r,r*1.14+8,k);gg=lerp(gg,gg*1.06,k);bb=lerp(bb,bb*0.9,k);
+    r2=lerp(r2,r2*1.14+8,k);g2=lerp(g2,g2*1.06,k);b22=lerp(b22,b22*0.9,k);}
+   else{const k=(0.5-m)*0.7;r=lerp(r,r*0.86,k);gg=lerp(gg,gg*1.02,k);bb=lerp(bb,bb*1.1,k);
+    r2=lerp(r2,r2*0.86,k);g2=lerp(g2,g2*1.02,k);b22=lerp(b22,b22*1.1,k);}
    // раскалённый ободок у лавы
-   if(b===BIOME.VOLCANO&&db<=1&&otherB[tiy*12+tix]===BIOME.LAVA&&h2(bx*5,by*7)>0.7){r=242;gg2=161;bb=60;}
+   if(b===BIOME.VOLCANO&&db<=1&&otherB[tiy*12+tix]===BIOME.LAVA&&h2(ix*5,iy*7)>0.7){r=242;gg=161;bb=60;r2=242;g2=161;b22=60;}
   }
+  tR[ti]=r*mul;tG[ti]=gg*mul;tB2[ti]=bb*mul;
+  tR2[ti]=r2*mul;tG2[ti]=g2*mul;tB22[ti]=b22*mul;
+  tMode[ti]=mode;
+ }
+ // --- блоки 2×2: только выбор тона + зерно (дёшево) ---
+ for(let by=0;by<128;by++)for(let bx=0;bx<128;bx++){
+  const wx=cx*256+bx*2,wy=cy*256+by*2;
+  const ti=((by>>4)*8)+(bx>>4);
+  const bay=BAYER[(bx&3)|((by&3)<<2)];
+  let r,gg,bb;
+  const mode=tMode[ti];
+  if(mode===1){if(bay>7){r=tR2[ti];gg=tG2[ti];bb=tB22[ti];}else{r=tR[ti];gg=tG[ti];bb=tB2[ti];}}
+  else if(mode===2){if(tSpark[ti]&&bay>10){r=tR2[ti];gg=tG2[ti];bb=tB22[ti];}else{r=tR[ti];gg=tG[ti];bb=tB2[ti];}}
+  else if(mode===3){if(bay>11){r=tR2[ti];gg=tG2[ti];bb=tB22[ti];}else{r=tR[ti];gg=tG[ti];bb=tB2[ti];}}
+  else{if(bay>7){r=tR2[ti];gg=tG2[ti];bb=tB22[ti];}else{r=tR[ti];gg=tG[ti];bb=tB2[ti];}}
   const gr=GRAIN[((wy&63)<<6)|(wx&63)];
   const o=((by*2)*256+bx*2)*4;
   for(let sy=0;sy<2;sy++)for(let sx=0;sx<2;sx++){
    const o2=o+sy*256*4+sx*4;
-   gbuf[o2]=r*mul+gr;gbuf[o2+1]=gg2*mul+gr;gbuf[o2+2]=bb*mul+gr;gbuf[o2+3]=255;
+   gbuf[o2]=r+gr;gbuf[o2+1]=gg+gr;gbuf[o2+2]=bb+gr;gbuf[o2+3]=255;
   }
  }
  gcv.getContext("2d").putImageData(gimg,0,0);
@@ -1715,6 +1737,13 @@ document.getElementById("mbpause").addEventListener("pointerdown",e=>{
 document.getElementById("mbboard").addEventListener("pointerdown",e=>{
  e.preventDefault();boardOn=!boardOn;showBoard(boardOn);
 });
+document.getElementById("resumebtn").addEventListener("click",()=>{
+ paused=false;document.getElementById("pausemodal").style.display="none";
+});
+document.getElementById("menubtn").addEventListener("click",()=>{
+ paused=false;document.getElementById("pausemodal").style.display="none";
+ exitNet();showStart();
+});
 
 // ---------- HUD ----------
 const hud={lvl:document.getElementById("lvltag"),hp:document.getElementById("hpfill"),hpt:document.getElementById("hptxt"),
@@ -1946,12 +1975,12 @@ window.restart=function(){
  document.getElementById("overmodal").style.display="none";
  startMatch();
 };
-window.showStart=function(){
+function showStart(){
  document.getElementById("overmodal").style.display="none";
- gameOn=false;
+ gameOn=false;exitNet();
  updateStartStats();
  document.getElementById("startmodal").style.display="flex";
-};
+}
 
 // ---------- старт ----------
 let mmBase=null;
@@ -1989,7 +2018,7 @@ function startMatch(forceSeed){
  // полный сброс состояния сессии
  closeModal();pendingPerks=0;pendingSkill=null;paused=false;matchEnded=false;
  feedEl.innerHTML="";for(const k in keys)keys[k]=false;mouse.down=false;
- spawnT=0;shake=0;hitstop=0;hurtFlash=0;hintIdx=0;zoneWarned=false;lastAlive=-1;dmgInds=[];
+ spawnT=0;shake=0;hitstop=0;hurtFlash=0;hintIdx=0;zoneWarned=false;lastAlive=-1;dmgInds=[];renderBroken=false;
  treeHp.clear();
  chars=[];enemies=[];projs=[];clouds=[];orbs=[];drops=[];parts=[];floats=[];deathLog=[];matchTime=0;
  for(let i=0;i<50;i++)chars.push(makeChar(i===0?"ВЫ":BOT_NAMES[i%BOT_NAMES.length]+"-"+(10+i),i===0,i));
@@ -2031,6 +2060,14 @@ document.getElementById("startbtn").onclick=()=>{
 let net=null,netMode=false,netTick=null;
 const remotes=new Map();
 function netStatus(s){document.getElementById("netstatus").textContent=s;}
+function showNetChip(t){const c=document.getElementById("netchip");c.textContent=t;c.style.display="inline-block";}
+function hideNetChip(){const c=document.getElementById("netchip");if(c)c.style.display="none";}
+function exitNet(){
+ if(net&&net.peer){try{net.peer.destroy();}catch(e){}}
+ net=null;netMode=false;remotes.clear();
+ if(netTick){clearInterval(netTick);netTick=null;}
+ hideNetChip();
+}
 function loadPeer(cb){
  if(window.Peer)return cb();
  const s=document.createElement("script");s.src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js";
@@ -2045,6 +2082,7 @@ function netSend(obj){
 function handleNet(raw,conn){
  let d;try{d=JSON.parse(raw);}catch(e){return;}
  if(d.t==="welcome"){ // клиент получил сид хоста — стартуем тот же мир
+  if(gameOn){netStatus("Матч уже идёт — мир пропущен");return;}
   netStatus("Вы в мире! Враги и боты локальные.");
   document.getElementById("startmodal").style.display="none";
   initAudio();startMatch(d.seed);netMode=true;
@@ -2059,24 +2097,29 @@ function handleNet(raw,conn){
  }
 }
 document.getElementById("hostbtn").onclick=()=>{
- initAudio();netStatus("Загрузка сети...");
+ initAudio();sfx("click");
+ document.getElementById("startmodal").style.display="none";
+ startMatch();netMode=true;remotes.clear(); // старт мгновенный, сеть подключается в фоне
+ netStatus("Матч идёт — мир станет доступен друзьям, когда подключится сеть");
  loadPeer(()=>{
   const code=makeCode();
   const peer=new Peer("pxr-"+code);
-  net={peer,isHost:true,conns:[],code};netMode=true;
+  net={peer,isHost:true,conns:[],code};
   peer.on("open",()=>{
-   netStatus("Мир создан! Код: "+code+" — передай друзьям");
-   document.getElementById("startmodal").style.display="none";
-   startMatch();
+   netStatus("");
+   showNetChip("КОД МИРА: "+code+" — друзья вводят его у себя");
    netTick=setInterval(()=>{if(gameOn)netSend({t:"z",x:Math.round(zone.curX),y:Math.round(zone.curY),r:Math.round(zone.curR),st:zone.stage});},1000);
   });
   peer.on("connection",conn=>{
    net.conns.push(conn);
-   conn.on("open",()=>conn.send(JSON.stringify({t:"welcome",seed:SEED})));
+   conn.on("open",()=>{conn.send(JSON.stringify({t:"welcome",seed:SEED}));addFeed("Игрок подключился к миру!",true);});
    conn.on("data",d=>handleNet(d,conn));
-   conn.on("close",()=>{net.conns=net.conns.filter(c2=>c2!==conn);addFeed("Игрок вышел из мира");});
+   conn.on("close",()=>{net.conns=net.conns.filter(c2=>c2!==conn);});
   });
-  peer.on("error",e=>netStatus("Ошибка сети: "+e.type));
+  peer.on("error",e=>{
+   netStatus("Сеть недоступна ("+e.type+") — играешь один, мир только для себя");
+   hideNetChip();
+  });
  });
 };
 document.getElementById("joinbtn").onclick=()=>{
@@ -2129,18 +2172,26 @@ buildMinimap();
 buildVignette();
 
 // ---------- главный цикл ----------
-let lastT=0,lastFrameT=0;
+let lastT=0,lastFrameT=0,renderBroken=false;
 function loopStep(t){
- let dt=Math.max(0,Math.min(0.05,(t-lastT)/1000||0.016));lastT=t;lastFrameT=performance.now();
- if(hitstop>0){hitstop-=dt;dt*=0.15;}
- update(dt);
- if(document.hidden)return; // в скрытой вкладке рендер не нужен — симуляция продолжается без графики
- render();updateHud();
+ try{
+  let dt=Math.max(0,Math.min(0.05,(t-lastT)/1000||0.016));lastT=t;lastFrameT=performance.now();
+  if(hitstop>0){hitstop-=dt;dt*=0.15;}
+  update(dt);
+  if(document.hidden)return; // в скрытой вкладке рендер не нужен — симуляция продолжается без графики
+  if(renderBroken){updateHud();return;}
+  render();updateHud();
+ }catch(e){
+  window.__loopErrs=(window.__loopErrs||0)+1;
+  if(window.__loopErrs<5)console.error("loop:",e);
+  if(window.__loopErrs===20){renderBroken=true;addFeedSafe("⚠ Сбой графики — игра продолжается без рендера");}
+ }
 }
+function addFeedSafe(t){try{addFeed(t,true);}catch(e){}}
 function loop(t){loopStep(t);requestAnimationFrame(loop);}
 requestAnimationFrame(loop);
-// страховка: только в фоновой вкладке (в видимой rAF сам справляется)
-setInterval(()=>{if(document.hidden&&performance.now()-lastFrameT>250)loopStep(performance.now());},200);
+// самовосстановление: если rAF-цикл умер (упал до фикса), интервал оживляет игру и на видимой вкладке
+setInterval(()=>{if(performance.now()-lastFrameT>600)loopStep(performance.now());},300);
 
 function update(dt){
  if(!gameOn||paused){shake=Math.max(0,shake-dt*30);return;}
@@ -2220,7 +2271,7 @@ function drawProps(){
 function render(){
  ctx.setTransform(1,0,0,1,0,0);
  ctx.fillStyle="#0b0d10";ctx.fillRect(0,0,W,H);
- frameChunkBudget=3; // разрешаем строить до 3 чанков за кадр — земля догоняет движение
+ frameChunkBudget=1; // 1 тяжёлый чанк за кадр — движение без фризов, земля догоняет за кадры
  if(!gameOn){drawMenuBackdrop();return;}
  const shx=(Math.random()-0.5)*shake,shy=(Math.random()-0.5)*shake;
  ctx.setTransform(ZOOM,0,0,ZOOM,Math.round(W/2-(cam.x+shx)*ZOOM),Math.round(H/2-(cam.y+shy)*ZOOM));
