@@ -108,7 +108,13 @@
   Убивай монстров по биомам, качайся, собирай случайные скилы.<br>
   Зона сужается. Победи, оставшись последним!</p>
   <p class="stats" id="persist"></p>
-  <button class="btn" id="startbtn">В БОЙ</button>
+  <button class="btn" id="startbtn">В БОЙ (одному)</button>
+  <p class="stats" style="margin-top:14px">— или общий мир с друзьями (WebRTC, без сервера):<br>
+  <button class="btn" id="hostbtn" style="font-size:12px;padding:6px 12px">Создать мир</button>
+  <input id="joincode" placeholder="КОД" maxlength="5" style="width:80px;background:#241c12;border:1px solid #6b5a3e;color:#ffe9a8;font-family:inherit;font-weight:bold;padding:6px;text-align:center;letter-spacing:2px">
+  <button class="btn" id="joinbtn" style="font-size:12px;padding:6px 12px">Войти по коду</button><br>
+  <span id="netstatus" style="color:#8de04a"></span><br>
+  <span style="color:#8a8272">Одинаковая карта и зона для всех; враги и боты у каждого свои.</span></p>
 </div></div>
 
 <script>
@@ -352,10 +358,12 @@ function lavaAt(tx,ty){return biomeAt(tx,ty)===BIOME.VOLCANO && (lavaN(tx*0.03+5
 
 // декор: детерминированно по хэшу координат
 const DECOR_SOLID=[0,1,1,1,1,1,1,1,0,0];
-const destroyedDecor=new Set(); // срубленные/уничтоженные деревья
-const treeHp=new Map(); // "tx,ty" -> {hp,shakeT}
+const destroyedMask=new Uint8Array(MAPW*MAPH);           // срубленные деревья
+const decorCache=new Uint8Array(MAPW*MAPH).fill(255);    // 255 = не вычислен
+const treeHp=new Map(); // числовой ключ -> {hp,shakeT}
+const tkey=(tx,ty)=>ty*512+tx;
 function damageTree(tx,ty){
- const key=tx+","+ty;
+ const key=tkey(tx,ty);
  const t=decorAt(tx,ty);if(!DECOR_SOLID[t])return;
  let e=treeHp.get(key);if(!e){e={hp:(t===1||t===11||t===2)?3:2,shakeT:0};treeHp.set(key,e);}
  e.hp--;e.shakeT=0.4;
@@ -364,18 +372,27 @@ function damageTree(tx,ty){
  for(let k=0;k<6;k++)parts.push({x:cxp+rr(-8,8),y:cyp-10+rr(-8,8),vx:rr(-60,60),vy:rr(-140,-40),t:0,life:rr(0.3,0.6),sz:3,
   col:`rgb(${leaf[0]},${leaf[1]},${leaf[2]})`,grav:300});
  sfxAt("hit",cxp,cyp);
- if(e.hp<=0){ // дерево падает
-  destroyedDecor.add(key);treeHp.delete(key);
+ if(e.hp<=0){ // дерево падает: награда за рубку
+  destroyedMask[ty*MAPW+tx]=1;decorCache[ty*MAPW+tx]=0;
+  treeHp.delete(key);
   for(let k=0;k<16;k++)parts.push({x:cxp+rr(-14,14),y:cyp-14+rr(-16,16),vx:rr(-120,120),vy:rr(-200,-60),t:0,life:rr(0.5,0.9),sz:4,
    col:k%3?"rgb(107,74,42)":`rgb(${leaf[0]},${leaf[1]},${leaf[2]})`,grav:400});
   sfxAt("kill",cxp,cyp);shake=Math.max(shake,3);
-  const ccx=Math.floor(tx/8),ccy=Math.floor(ty/8);
-  for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++)chunkCache.delete((ccx+ox)+","+(ccy+oy));
+  chunkCache.delete(((tx/8)|0)+","+((ty/8)|0)); // декали только в своём чанке
+  // лут: 20% сердечный орб (лечит), 10% xp-взрыв, 5% скил
+  const roll=R();
+  if(roll<0.2)orbs.push({x:cxp,y:cyp-10,val:-1,t:0,heal:0.15});
+  else if(roll<0.3){for(let k=0;k<3;k++)orbs.push({x:cxp+rr(-12,12),y:cyp-10+rr(-10,10),val:30+(BIOME_RU2[biomeAt(tx,ty)]||2)*6,t:0});}
+  else if(roll<0.35)drops.push({x:cxp,y:cyp,skill:makeSkill(0.5),t:0});
  }
 }
+const BIOME_RU2={1:1,2:2,3:3,4:4,5:5};
 function decorAt(tx,ty){
- if(destroyedDecor.has(tx+","+ty))return 0;
- const b=biomeAt(tx,ty);if(b===BIOME.WATER||b===BIOME.LAVA)return 0;
+ if(tx<0||ty<0||tx>=MAPW||ty>=MAPH)return 0;
+ const di=ty*MAPW+tx;
+ if(destroyedMask[di])return 0;
+ const dc=decorCache[di];if(dc!==255)return dc;
+ const b=biomeAt(tx,ty);if(b===BIOME.WATER||b===BIOME.LAVA){decorCache[di]=0;return 0;}
  const r=h2(tx*3+7,ty*3+11);const r2=h2(tx*5+1,ty*5+3);
  let p=0,t=0;
  if(b===BIOME.FOREST){
@@ -395,7 +412,8 @@ function decorAt(tx,ty){
  else if(b===BIOME.DESERT){p=0.05;t=r<0.55?3:(r<0.85?4:8);}
  else if(b===BIOME.SNOW){p=0.09;t=r<0.6?2:(r<0.85?7:4);}
  else if(b===BIOME.VOLCANO){p=0.07;t=r<0.55?6:(r<0.85?4:5);}
- if(r2>p)return 0;return t;
+ if(r2>p){decorCache[di]=0;return 0;}
+ decorCache[di]=t;return t;
 }
 function decorRadius(t){return [0,10,9,9,9,8,9,9,0,0][t];}
 
@@ -413,10 +431,17 @@ const BIOME_RGB=[
  [[150,168,188],[178,194,210],[193,209,224],[209,224,237],[227,240,248],[240,248,252]],
  [[40,36,48],[52,48,60],[64,59,74],[78,72,92],[94,88,110],[112,105,130]],
  [[122,40,16],[224,90,26],[242,161,60],[255,200,92],[255,220,130],[255,236,160]]];
-// непрерывная рампа: лерп между стопами — без постеризации
+// непрерывная рампа: лерп между стопами — без постеризации и аллокаций
+const _rc=[0,0,0],_rc2=[0,0,0];
 function rampColor(pal,t){
  const n=pal.length-1,f=clamp(t,0,1)*n,i=Math.min(n-1,f|0),k=f-i;
- return [lerp(pal[i][0],pal[i+1][0],k),lerp(pal[i][1],pal[i+1][1],k),lerp(pal[i][2],pal[i+1][2],k)];
+ _rc[0]=lerp(pal[i][0],pal[i+1][0],k);_rc[1]=lerp(pal[i][1],pal[i+1][1],k);_rc[2]=lerp(pal[i][2],pal[i+1][2],k);
+ return _rc;
+}
+function rampColor2(pal,t){
+ const n=pal.length-1,f=clamp(t,0,1)*n,i=Math.min(n-1,f|0),k=f-i;
+ _rc2[0]=lerp(pal[i][0],pal[i+1][0],k);_rc2[1]=lerp(pal[i][1],pal[i+1][1],k);_rc2[2]=lerp(pal[i][2],pal[i+1][2],k);
+ return _rc2;
 }
 const gbuf=new Uint8ClampedArray(256*256*4);
 const gimg=new ImageData(gbuf,256,256);
@@ -695,7 +720,7 @@ function renderChunk(cx,cy){
    const n=lavaN(wx*0.02,wy*0.02,2)*0.5+0.5;
    if(n>0.62){r=70;gg2=32;bb=20;}
    else if(n>0.5){r=242;gg2=161;bb=60;}
-   else{const c1=rampColor(BIOME_RGB[6],v),c2=rampColor(BIOME_RGB[6],clamp(v+0.25,0,1));
+   else{const c1=rampColor(BIOME_RGB[6],v),c2=rampColor2(BIOME_RGB[6],clamp(v+0.25,0,1));
     r=lerp(c1[0],c2[0],v);gg2=lerp(c1[1],c2[1],v);bb=lerp(c1[2],c2[2],v);}
   }else if(b===BIOME.WATER){
    const dl=distLand[tiy*12+tix];
@@ -758,10 +783,18 @@ function renderChunk(cx,cy){
  }
  return cv;
 }
+// бюджет чанков: максимум 2 тяжёлых построек за кадр, недостающие добираются постепенно
+let frameChunkBudget=0;
+const chunkStub=(()=>{const c=document.createElement("canvas");c.width=c.height=8*TILE;
+ const g=c.getContext("2d");g.fillStyle="#141c10";g.fillRect(0,0,c.width,c.height);return c;})();
 function getChunk(cx,cy){const k=cx+","+cy;let c=chunkCache.get(k);
- if(!c){c=renderChunk(cx,cy);chunkCache.set(k,c);
-  if(chunkCache.size>160){const it=chunkCache.keys();for(let i=0;i<40;i++)chunkCache.delete(it.next().value);}}
- return c;}
+ if(c)return c;
+ if(cx<0||cy<0||cx>=MAPW/8||cy>=MAPH/8)return chunkStub;
+ if(frameChunkBudget>0){frameChunkBudget--;c=renderChunk(cx,cy);chunkCache.set(k,c);
+  if(chunkCache.size>160){const it=chunkCache.keys();for(let i=0;i<40;i++)chunkCache.delete(it.next().value);}
+  return c;}
+ return chunkStub; // земля догонит за следующие кадры — кадр не блокируется
+}
 
 // коллизии с декором
 function blocked(px,py,r){
@@ -1001,6 +1034,7 @@ const canvas=document.getElementById("game"),ctx=canvas.getContext("2d");
 const mmCv=document.getElementById("minimap"),mmCtx=mmCv.getContext("2d");
 let W=innerWidth,H=innerHeight,ZOOM=2;
 let hatchPat=null,vigCv=null;
+const fontCache={};
 function resize(){W=innerWidth;H=innerHeight;ZOOM=innerHeight>=1400?3:2;canvas.width=W;canvas.height=H;ctx.imageSmoothingEnabled=false;buildVignette();}
 addEventListener("resize",resize);resize();
 
@@ -1008,7 +1042,13 @@ const SLOT_BASE=3,SLOT_MAX=6,SLOT_COST=6;
 let save={};
 try{save=JSON.parse(localStorage.getItem("pixelroyale"))||{};}catch(e){save={};}
 save.slots=save.slots||0;save.wins=save.wins||0;save.matches=save.matches||0;save.best=save.best||99;save.shards=save.shards||0;save.disc=save.disc||{};
-function persist(){try{localStorage.setItem("pixelroyale",JSON.stringify(save));}catch(e){}}
+function persist(){try{
+ const fresh=JSON.parse(localStorage.getItem("pixelroyale"))||{}; // мердж: две вкладки не затирают друг друга
+ for(const k of ["wins","matches"])save[k]=Math.max(save[k]||0,fresh[k]||0);
+ save.best=Math.min(save.best??99,fresh.best??99);
+ save.shards=Math.max(save.shards||0,fresh.shards||0);
+ if(fresh.disc)for(const k in fresh.disc)save.disc[k]=save.disc[k]||fresh.disc[k];
+ localStorage.setItem("pixelroyale",JSON.stringify(save));}catch(e){}}
 function extraSlots(){return Math.min(SLOT_MAX-SLOT_BASE,Math.floor(save.shards/SLOT_COST));}
 
 const BOT_NAMES=["Тень","Клык","Гром","Ворон","Камень","Пепел","Мороз","Змей","Хват","Стрела","Обсидиан","Вихрь","Курган","Игла","Буран","Кремень","Лоза","Шип","Костяк","Сумрак","Осколок","Молот","Куст","Жила","Вереск","Топор","Иней","Сажа","Рвача","Гарь","Крапива","Дёготь","Свист","Слюда","Корень","Хмарь","Зазубра","Накипь","Полынь","Стужа"];
@@ -1120,6 +1160,13 @@ function makeChar(name,isPlayer,ci){
   perks:[],flags:{},skills:[],cds:[],atkCd:0,regenT:0,shield:0,shieldT:0,face:1,walkT:0,hpShowT:0,shotN:0,moving:false,dustT:0,
   ai:{wt:0,wx:sp.x,wy:sp.y,agg:rr(0.3,1)},col:`hsl(${(ci*47)%360},60%,55%)`,dmgFlash:0};
  c.stat=calcStats(c);c.hp=c.stat.maxhp;
+ if(!isPlayer){ // архетипы ботов: фермер / хищник / крыса / дуэлянт
+  const ar=R();
+  if(ar<0.4){c.arch="farm";c.ai.agg=0.05;}
+  else if(ar<0.65){c.arch="hunt";c.ai.agg=1;c.pvpR=550;}
+  else if(ar<0.85){c.arch="rat";c.ai.agg=0.02;c.fleeHp=0.6;c.rat=true;}
+  else{c.arch="duel";c.ai.agg=0.8;}
+ }
  return c;
 }
 
@@ -1146,6 +1193,17 @@ function updateZone(dt){
  zone.curX=lerp(zone.cx,zone.tx,p);zone.curY=lerp(zone.cy,zone.ty,p);
  const dps=5+zone.stage*6;
  for(const em of zone.embers)em.a+=dt*0.03*(1+em.w*0.1);
+ // событие «волна»: на середине каждой стадии — толпа врагов к игроку
+ const wdur=STAGE_DUR[zone.stage];
+ if(gameOn&&zone.t>wdur*0.55&&zone.lastWaveStage!==zone.stage&&zone.stage>=1){
+  zone.lastWaveStage=zone.stage;
+  const n=8+zone.stage*4;
+  addFeed("⚠ ВОЛНА! "+n+" врагов идут к тебе",true);sfx("zone");shake=Math.max(shake,4);
+  for(let k=0;k<n;k++){
+   const a2=R()*TAU,d2=rr(480,760);
+   spawnEnemyAt(clamp(player.x+Math.cos(a2)*d2,TILE*2,WORLD-TILE*2),clamp(player.y+Math.sin(a2)*d2,TILE*2,WORLD-TILE*2));
+  }
+ }
  let zoneTick=0;
  for(const c of chars){if(c.dead)continue;
   const d=Math.hypot(c.x-zone.curX,c.y-zone.curY);
@@ -1166,17 +1224,18 @@ function desiredTier(){
  const pl=player&&!player.dead?player.lv:avg;
  return clamp(Math.round(Math.max(pl/4,avg/5)),0,4);
 }
-function spawnEnemy(){
+function spawnEnemy(x,y){
  const minR=zone.stage>=6?300:Math.max(W,H)/ZOOM/2+250;
  const maxR=zone.stage>=6?700:minR+580;
- let x,y,b;
- for(let tr=0;tr<20;tr++){
-  const a=R()*TAU,d=rr(minR,maxR);
-  x=clamp(cam.x+Math.cos(a)*d,TILE,WORLD-TILE);y=clamp(cam.y+Math.sin(a)*d,TILE,WORLD-TILE);
-  b=biomeAt(Math.floor(x/TILE),Math.floor(y/TILE));
-  if(b!==BIOME.WATER&&b!==BIOME.LAVA)break;
+ if(x===undefined){
+  for(let tr=0;tr<20;tr++){
+   const a=R()*TAU,d=rr(minR,maxR);
+   x=clamp(cam.x+Math.cos(a)*d,TILE,WORLD-TILE);y=clamp(cam.y+Math.sin(a)*d,TILE,WORLD-TILE);
+   const b=biomeAt(Math.floor(x/TILE),Math.floor(y/TILE));
+   if(b!==BIOME.WATER&&b!==BIOME.LAVA)break;
+  }
  }
- const pool=byBiome[BIOME_KEYS[b-1]]||byBiome.plains;
+ const pool=byBiome[BIOME_KEYS[biomeAt(Math.floor(x/TILE),Math.floor(y/TILE))-1]]||byBiome.plains;
  const want=desiredTier();
  let best=null,bw=-1;
  for(const t of pool){const w=1/(1+Math.abs(t.tier-1-want)*0.9)+R()*0.5;if(w>bw){bw=w;best=t;}}
@@ -1189,7 +1248,8 @@ function updateSpawns(dt){
  if(spawnT<=0){spawnT=0.8;
   const cap=zone.stage>=6?50:130;
   if(enemies.length<cap)for(let i=0;i<3;i++)spawnEnemy();
-  enemies=enemies.filter(e=>dist2(e.x,e.y,cam.x,cam.y)<1600*1600||e.hp<e.maxhp);
+  // раненые враги-беглецы не должны занимать кап вечно — «пустеющая» игра
+  enemies=enemies.filter(e=>dist2(e.x,e.y,cam.x,cam.y)<1600*1600);
  }
 }
 
@@ -1373,9 +1433,9 @@ function updateCharAI(c,dt){
   let tgt=null,td=1e9;
   for(const e of enemies){const d=dist2(e.x,e.y,c.x,c.y);if(d<td&&d<300*300){td=d;tgt=e;}}
   if(c.ai.agg>0.4||c.hp<s.maxhp*0.5){
-   for(const o of chars){if(o===c||o.dead)continue;const d=dist2(o.x,o.y,c.x,c.y);if(d<td&&d<400*400){td=d;tgt=o;}}
+   for(const o of chars){if(o===c||o.dead||o.hidden)continue;const d=dist2(o.x,o.y,c.x,c.y);if(d<td&&d<(c.pvpR||400)*(c.pvpR||400)){td=d;tgt=o;}}
   }
-  const low=c.hp<s.maxhp*0.28;
+  const low=c.hp<s.maxhp*(c.fleeHp||0.28);
   if(low&&tgt){vx=(c.x-tgt.x);vy=(c.y-tgt.y);}
   else if(tgt){vx=(tgt.x-c.x);vy=(tgt.y-c.y);
    if(td<(34+c.r)*(34+c.r)&&c.atkCd<=0){c.atkCd=0.8;
@@ -1384,7 +1444,10 @@ function updateCharAI(c,dt){
   }
   else{
    if(c.ai.wt<=0){c.ai.wt=rr(2,5);
-    if(outside){c.ai.wx=zone.curX+rr(-200,200);c.ai.wy=zone.curY+rr(-200,200);}
+    if(outside||c.rat){ // крысы держатся кромки зоны и пережидают
+     const ang=Math.atan2(c.y-zone.curY,c.x-zone.curX);
+     c.ai.wx=clamp(zone.curX+Math.cos(ang)*(c.rat?zone.curR*0.8:zone.curR*0.4),TILE,WORLD-TILE);
+     c.ai.wy=clamp(zone.curY+Math.sin(ang)*(c.rat?zone.curR*0.8:zone.curR*0.4),TILE,WORLD-TILE);}
     else{c.ai.wx=clamp(c.x+rr(-500,500),TILE,WORLD-TILE);c.ai.wy=clamp(c.y+rr(-500,500),TILE,WORLD-TILE);}}
    if(zone.stage>=2){c.ai.wx=lerp(c.ai.wx,zone.tx,0.35);c.ai.wy=lerp(c.ai.wy,zone.ty,0.35);}
    vx=c.ai.wx-c.x;vy=c.ai.wy-c.y;
@@ -1409,6 +1472,9 @@ function updateCharAI(c,dt){
  if(vx)c.face=vx>0?1:-1;
  c.moving=Math.abs(vx)+Math.abs(vy)>0.1;
  c.walkT+=c.moving?dt*8:0;
+ // кусты-засады: внутри куста персонаж скрыт, выстрел выдаёт
+ if(c.revealT)c.revealT=Math.max(0,c.revealT-dt);
+ c.hidden=decorAt(Math.floor(c.x/TILE),Math.floor(c.y/TILE))===9&&(c.revealT||0)<=0;
  // пыль от шагов
  c.dustT-=dt;
  if(c.moving&&c.dustT<=0){c.dustT=0.22;
@@ -1428,13 +1494,20 @@ function updateCharAI(c,dt){
   // вспышка у дула пушки
   stars.push({x:c.x+Math.cos(a)*16,y:c.y+Math.sin(a)*16,t:0,life:0.08,col:"#ffd76a",a:R()*TAU});
   shake=Math.max(shake,1.5);
+  c.revealT=2; // выстрел снимает маскировку
   sfx("shoot");
  }
  // сбор опыта и дропов
  for(let i=orbs.length-1;i>=0;i--){const o=orbs[i];
   if(dist2(o.x,o.y,c.x,c.y)<s.pickup*s.pickup){orbs.splice(i,1);
-   if(c.isPlayer){c.xpCombo=c.xpComboT>0?(c.xpCombo||0)+1:0;c.xpComboT=0.8;sfx("xp",c.xpCombo);}
-   gainXp(c,o.val);}}
+   if(o.heal){ // сердечный орб: лечение вместо опыта
+    c.hp=Math.min(c.stat.maxhp,c.hp+c.stat.maxhp*o.heal);
+    if(c.isPlayer){floats.push({x:c.x,y:c.y-18,t:0,txt:"+HP",col:"#ff7aa0",sz:12});sfx("drop");}
+   }else{
+    if(c.isPlayer){c.xpCombo=c.xpComboT>0?(c.xpCombo||0)+1:0;c.xpComboT=0.8;sfx("xp",c.xpCombo);}
+    gainXp(c,o.val);
+   }
+  }}
  for(let i=drops.length-1;i>=0;i--){const d=drops[i];
   if(!c.isPlayer)break;
   if(dist2(d.x,d.y,c.x,c.y)<s.pickup*s.pickup){drops.splice(i,1);
@@ -1458,7 +1531,7 @@ function updateEnemies(dt){
   if(eb===BIOME.WATER)spd*=0.55;
   if(eb===BIOME.LAVA){e.hp-=12*dt;if(e.hp<=0){killEnemy(e,null);continue;}}
   let tgt=null,td=1e9;
-  for(const c of chars){if(c.dead)continue;const d=dist2(c.x,c.y,e.x,e.y);if(d<td){td=d;tgt=c;}}
+  for(const c of chars){if(c.dead||c.hidden&&td>130*130)continue;const d=dist2(c.x,c.y,e.x,e.y);if(d<td){td=d;tgt=c;}}
   if(tgt&&td<420*420){
    if(!e.named){e.named=true;floats.push({x:e.x,y:e.y-e.r-12,t:0,txt:e.t.name,col:"#ffd76a",sz:9});
     if(e.t.tier>=4&&!hintElite){hintElite=true;addFeed("Золотая искра — элитный враг: опаснее, но лут жирнее",true);}}
@@ -1480,6 +1553,9 @@ function updateEnemies(dt){
     if(e.pounceCd>0)e.pounceCd-=dt;
     if(e.t.tier>=4&&e.t.shape==="beast"&&e.pounceCd<=0&&dist<250*250&&dist>60*60){e.pounceT=0.5;e.pounceCd=3;}
     if(e.pounceT>0){e.pounceT-=dt;spd=300;}
+    // анти-кайт: долгая погоня ускоряет преследователя
+    e.chT=(tgt===player&&dist>100*100)?(e.chT||0)+dt:0;
+    if(e.chT>3)spd*=1.18;
     const nx=e.x+dx/l*spd*dt,ny=e.y+dy/l*spd*dt;
     if(!blocked(nx,e.y,e.r))e.x=nx;if(!blocked(e.x,ny,e.r))e.y=ny;
     if(td<(e.r+tgt.r+4)*(e.r+tgt.r+4)&&e.atkCd<=0){e.atkCd=1.1;charAttack(e,tgt,e.dmg);}
@@ -1503,8 +1579,11 @@ function updateProjs(dt){
    if(blocked(p.x,p.y,2)){dead=true;
     // попадание в дерево: оно разрушаемое
     const ptx=Math.floor(p.x/TILE),pty=Math.floor(p.y/TILE);
-    for(let oy=-1;oy<=1&&!p.dead;oy++)for(let ox=-1;ox<=1;ox++){
-     if(DECOR_SOLID[decorAt(ptx+ox,pty+oy)]){damageTree(ptx+ox,pty+oy);break;}
+    if(ptx<0||pty<0||ptx>=MAPW||pty>=MAPH){dead=true;break;}
+    let hitTree=false;
+    outer:
+    for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++){
+     if(DECOR_SOLID[decorAt(ptx+ox,pty+oy)]){damageTree(ptx+ox,pty+oy);hitTree=true;break outer;}
     }
     break;}
    const side=p.owner===player?"player":(p.owner.t?"enemy":"bot");
@@ -1540,6 +1619,8 @@ function updateProjs(dt){
   if(cl.life<=0)clouds.splice(i,1);
  }
  // орбы и дропы стареют
+ // орбы: лимит 150 — старшие исчезают первыми, чтобы не душить кадр
+ if(orbs.length>150)orbs.splice(0,orbs.length-150);
  for(let i=orbs.length-1;i>=0;i--){const o=orbs[i];o.t+=dt;if(o.t>60)orbs.splice(i,1);}
  for(let i=drops.length-1;i>=0;i--){const d=drops[i];d.t=(d.t||0)+dt;if(d.t>120)drops.splice(i,1);}
 }
@@ -1616,7 +1697,7 @@ function refreshSkillbar(){
   prevCd[i]=cdFrac;
  }
 }
-let lastAlive=-1;
+let lastAlive=-1,lastZoneHtml="";
 function updateHud(){
  if(!gameOn||!player)return;
  hud.lvl.textContent=`Ур. ${player.lv} · ${player.kills} убийств`;
@@ -1630,7 +1711,9 @@ function updateHud(){
  const left=zone.stage<ZONE_FRAC.length-1?Math.max(0,Math.round(dur-zone.t)):0;
  const mm=Math.floor(matchTime/60),ss=String(Math.floor(matchTime%60)).padStart(2,"0");
  const urgent=left>0&&left<=10;
- hud.zoneEl.innerHTML=`Зона: стадия ${zone.stage+1}${left>0?` · сужение <span id="zonetime"${urgent?' class="urgent"':""}>${left}с</span>`:" · финал"} · <span style="color:#b7ad96">${mm}:${ss}</span>`;
+ // innerHTML пересобирается только при изменении секунд — иначе layout-мусор каждый кадр
+ const html=`Зона: стадия ${zone.stage+1}${left>0?` · сужение <span id="zonetime"${urgent?' class="urgent"':""}>${left}с</span>`:" · финал"} · <span style="color:#b7ad96">${mm}:${ss}</span>`;
+ if(html!==lastZoneHtml){lastZoneHtml=html;hud.zoneEl.innerHTML=html;}
  refreshSkillbar();
 }
 
@@ -1742,6 +1825,8 @@ function afterModal(){
 function endMatch(won){
  if(matchEnded)return;matchEnded=true;
  gameOn=false;paused=true;
+ // закрыть модалки и сбросить очередь — левелап и смерть в одном кадре
+ closeModal();pendingPerks=0;pendingSkill=null;
  if(won){player.place=1;deathLog.push({name:player.name,place:1,kills:player.kills,lv:player.lv,cause:"—",me:true});}
  save.matches++;
  save.best=Math.min(save.best,player.place||1);
@@ -1829,16 +1914,18 @@ function updateStartStats(){
   (save.slots<SLOT_MAX-SLOT_BASE?` · до слота: ${save.shards%SLOT_COST||SLOT_COST}/${SLOT_COST} осколков`:"")+
   `<br>Открыто видов: ${Object.keys(save.disc).length}/200`;
 }
-function startMatch(){
- SEED=(Math.random()*2147483647)|0;
+function startMatch(forceSeed){
+ if(forceSeed!==undefined){SEED=forceSeed;R=mulberry32(SEED+1);} // онлайн: общий сид и одинаковая последовательность R
+ else{SEED=(Math.random()*2147483647)|0;R=mulberry32(Date.now()%2147483647);}
  buildWorldSeed();
  chunkCache.clear();biomeCache.fill(0);
+ destroyedMask.fill(0);decorCache.fill(255);treeHp.clear();
  buildMinimap();
  // полный сброс состояния сессии
  closeModal();pendingPerks=0;pendingSkill=null;paused=false;matchEnded=false;
  feedEl.innerHTML="";for(const k in keys)keys[k]=false;mouse.down=false;
  spawnT=0;shake=0;hitstop=0;hurtFlash=0;hintIdx=0;zoneWarned=false;lastAlive=-1;dmgInds=[];
- treeHp.clear();destroyedDecor.clear();
+ treeHp.clear();
  chars=[];enemies=[];projs=[];clouds=[];orbs=[];drops=[];parts=[];floats=[];deathLog=[];matchTime=0;
  for(let i=0;i<50;i++)chars.push(makeChar(i===0?"ВЫ":BOT_NAMES[i%BOT_NAMES.length]+"-"+(10+i),i===0,i));
  // разводим бойцов: никто не спавнится ближе 500px к другому
@@ -1860,6 +1947,11 @@ function startMatch(){
  addFeed("Битва началась! 50 бойцов на карте.",true);
  addFeed("Ты в биоме: "+BIOME_RU[bi]);
  for(let i=0;i<80;i++)spawnEnemy();
+ // прогрев чанков вокруг игрока — без стартового заикания
+ const pcx=Math.floor(player.x/TILE/8),pcy=Math.floor(player.y/TILE/8);
+ for(let oy=-2;oy<=2;oy++)for(let ox=-2;ox<=2;ox++){
+  if(pcx+ox>=0&&pcy+oy>=0&&pcx+ox<MAPW/8&&pcy+oy<MAPH/8)getChunk(pcx+ox,pcy+oy);
+ }
 }
 document.getElementById("startbtn").onclick=()=>{
  initAudio();
@@ -1867,7 +1959,97 @@ document.getElementById("startbtn").onclick=()=>{
  sfx("click");
  document.getElementById("startmodal").style.display="none";
  startMatch();
+ netMode=false;remotes.clear();
 };
+// ---------- общий мир: WebRTC P2P через бесплатный сигналинг PeerJS ----------
+let net=null,netMode=false,netTick=null;
+const remotes=new Map();
+function netStatus(s){document.getElementById("netstatus").textContent=s;}
+function loadPeer(cb){
+ if(window.Peer)return cb();
+ const s=document.createElement("script");s.src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js";
+ s.onload=cb;s.onerror=()=>netStatus("⚠ Нет сети для онлайна");document.head.appendChild(s);
+}
+function makeCode(){const abc="ABCDEFGHJKMNPQRSTUVWXYZ23456789";let s="";for(let i=0;i<5;i++)s+=abc[Math.floor(Math.random()*abc.length)];return s;}
+function netSend(obj){
+ if(!net)return;const data=JSON.stringify(obj);
+ if(net.isHost){for(const c of net.conns)if(c.open)c.send(data);}
+ else if(net.hostConn&&net.hostConn.open)net.hostConn.send(data);
+}
+function handleNet(raw,conn){
+ let d;try{d=JSON.parse(raw);}catch(e){return;}
+ if(d.t==="welcome"){ // клиент получил сид хоста — стартуем тот же мир
+  netStatus("Вы в мире! Враги и боты локальные.");
+  document.getElementById("startmodal").style.display="none";
+  initAudio();startMatch(d.seed);netMode=true;
+  return;
+ }
+ if(d.t==="p"){
+  if(net&&net.isHost&&conn.peer)netSend(d); // хост ретранслирует позиции всем
+  remotes.set(conn.peer||("r"+d.n),{x:d.x,y:d.y,name:d.n,lv:d.lv,hp:d.hp,hid:d.h,t:performance.now()});
+ }
+ if(d.t==="z"){ // зона синхронизируется хостом
+  zone.curX=d.x;zone.curY=d.y;zone.curR=d.r;zone.stage=d.st;
+ }
+}
+document.getElementById("hostbtn").onclick=()=>{
+ initAudio();netStatus("Загрузка сети...");
+ loadPeer(()=>{
+  const code=makeCode();
+  const peer=new Peer("pxr-"+code);
+  net={peer,isHost:true,conns:[],code};netMode=true;
+  peer.on("open",()=>{
+   netStatus("Мир создан! Код: "+code+" — передай друзьям");
+   document.getElementById("startmodal").style.display="none";
+   startMatch();
+   netTick=setInterval(()=>{if(gameOn)netSend({t:"z",x:Math.round(zone.curX),y:Math.round(zone.curY),r:Math.round(zone.curR),st:zone.stage});},1000);
+  });
+  peer.on("connection",conn=>{
+   net.conns.push(conn);
+   conn.on("open",()=>conn.send(JSON.stringify({t:"welcome",seed:SEED})));
+   conn.on("data",d=>handleNet(d,conn));
+   conn.on("close",()=>{net.conns=net.conns.filter(c2=>c2!==conn);addFeed("Игрок вышел из мира");});
+  });
+  peer.on("error",e=>netStatus("Ошибка сети: "+e.type));
+ });
+};
+document.getElementById("joinbtn").onclick=()=>{
+ const code=(document.getElementById("joincode").value||"").trim().toUpperCase();
+ if(!code){netStatus("Введи код мира");return;}
+ initAudio();netStatus("Загрузка сети...");
+ loadPeer(()=>{
+  const peer=new Peer();
+  net={peer,isHost:false,conns:[],code};netMode=true;
+  peer.on("open",()=>{
+   netStatus("Подключаюсь к "+code+"...");
+   const conn=peer.connect("pxr-"+code,{reliable:true});
+   net.hostConn=conn;
+   conn.on("open",()=>{netStatus("Подключено!");conn.send(JSON.stringify({t:"p",n:"Гость",x:player?player.x:0,y:player?player.y:0,lv:1,hp:100,h:0}));});
+   conn.on("data",d=>handleNet(d,conn));
+   conn.on("close",()=>{netStatus("Хост вышел из игры");remotes.clear();});
+  });
+  peer.on("error",e=>netStatus("Ошибка: "+e.type));
+ });
+};
+// рассылка своей позиции + отрисовка игроков из общего мира
+setInterval(()=>{
+ if(net&&netMode&&gameOn&&player&&!player.dead)
+  netSend({t:"p",n:player.name,x:Math.round(player.x),y:Math.round(player.y),lv:player.lv,hp:Math.round(player.hp),h:player.hidden?1:0});
+},120);
+function drawRemotes(){
+ const now=performance.now();
+ for(const [id,rp] of remotes){
+  if(now-rp.t>6000){remotes.delete(id);continue;}
+  if(!rp.spr)rp.spr=makeHero(Object.keys(remotes).length*3+2,1,0,0);
+  ctx.fillStyle="rgba(10,8,16,0.5)";ctx.beginPath();ctx.ellipse(rp.x,rp.y+11,11,4,0,0,TAU);ctx.fill();
+  ctx.save();ctx.translate(rp.x,rp.y);if(rp.hid)ctx.globalAlpha=0.45;
+  ctx.drawImage(rp.spr.sprite,-13,-13,26,26);ctx.restore();
+  ctx.font='bold 9px monospace';ctx.textAlign="center";
+  ctx.strokeStyle="rgba(0,0,0,0.9)";ctx.lineWidth=3;ctx.strokeText(rp.name,rp.x,rp.y-17);
+  ctx.fillStyle="#8de04a";ctx.fillText(rp.name,rp.x,rp.y-17);
+  drawBar(rp.x-12,rp.y-24,24,clamp(rp.hp/100,0,1),"#5aa7ff");
+ }
+}
 updateStartStats();
 // стартовая инициализация мира: шумы, атлас пропсов, миникарта для меню
 function buildWorldSeed(){
@@ -1885,12 +2067,14 @@ let lastT=0,lastFrameT=0;
 function loopStep(t){
  let dt=Math.max(0,Math.min(0.05,(t-lastT)/1000||0.016));lastT=t;lastFrameT=performance.now();
  if(hitstop>0){hitstop-=dt;dt*=0.15;}
- update(dt);render();updateHud();
+ update(dt);
+ if(document.hidden)return; // в скрытой вкладке рендер не нужен — симуляция продолжается без графики
+ render();updateHud();
 }
 function loop(t){loopStep(t);requestAnimationFrame(loop);}
 requestAnimationFrame(loop);
-// страховка: если вкладка в фоне и rAF замолчал — тикаем по таймеру
-setInterval(()=>{if(performance.now()-lastFrameT>250)loopStep(performance.now());},200);
+// страховка: только в фоновой вкладке (в видимой rAF сам справляется)
+setInterval(()=>{if(document.hidden&&performance.now()-lastFrameT>250)loopStep(performance.now());},200);
 
 function update(dt){
  if(!gameOn||paused){shake=Math.max(0,shake-dt*30);return;}
@@ -1961,7 +2145,7 @@ function drawProps(){
   let rot=0;
   if(t===1||t===11||t===2||t===9)rot=Math.sin(matchTime*1.6+tx2*1.7+ty2*0.9)*0.018;
   else if(t===5)rot=Math.sin(matchTime*2.1+tx2*1.3)*0.01;
-  const hp=treeHp.get(tx2+","+ty2);
+  const hp=treeHp.get(tkey(tx2,ty2));
   if(hp&&hp.shakeT>0)rot+=(Math.random()-0.5)*0.14*(hp.shakeT/0.4);
   if(rot){ctx.save();ctx.translate(bx,by);ctx.rotate(rot);ctx.drawImage(img,-img.width/2,-img.height+2);ctx.restore();}
   else ctx.drawImage(img,bx-img.width/2,by-img.height+2);
@@ -1980,6 +2164,7 @@ function render(){
   for(let cx=Math.max(0,x0|0);cx<=Math.min(MAPW/8-1,x1|0);cx++)
    ctx.drawImage(getChunk(cx,cy),cx*8*TILE,cy*8*TILE);
  drawProps();
+ drawRemotes();
  // дропы скилов с телеграфом (светящийся столб света)
  ctx.globalCompositeOperation="lighter";
  for(const d of drops){
@@ -1992,9 +2177,16 @@ function render(){
   ctx.fillStyle="#fff";ctx.fillRect(d.x-1,d.y-3,2,6);
  }
  ctx.globalCompositeOperation="source-over";
- // сферы опыта: глоу + пульс + белое ядро
+ // сферы опыта и сердечные орбы: глоу + пульс
  ctx.globalCompositeOperation="lighter";
- for(const o of orbs){const s=2+Math.sin(matchTime*7+o.x)*0.5;
+ for(const o of orbs){
+  if(o.heal){ // сердечный орб: розовый крест
+   ctx.globalAlpha=0.25;ctx.fillStyle="#ff7aa0";ctx.beginPath();ctx.arc(o.x,o.y,7,0,TAU);ctx.fill();
+   ctx.globalAlpha=1;ctx.fillStyle="#ff7aa0";ctx.fillRect(o.x-3,o.y-3,6,6);
+   ctx.fillStyle="#fff";ctx.fillRect(o.x-1,o.y-3,2,6);ctx.fillRect(o.x-3,o.y-1,6,2);
+   continue;
+  }
+  const s=2+Math.sin(matchTime*7+o.x)*0.5;
   ctx.globalAlpha=0.22;ctx.fillStyle="#7fe04a";ctx.beginPath();ctx.arc(o.x,o.y,6,0,TAU);ctx.fill();
   ctx.globalAlpha=1;ctx.fillStyle="#7fe04a";ctx.fillRect(o.x-s-1,o.y-s-1,s*2+2,s*2+2);
   ctx.fillStyle="#eaffdc";ctx.fillRect(o.x-1,o.y-1,2,2);}
@@ -2043,6 +2235,7 @@ const ANIM={beast:{f:9,a:2,waddle:1},blob:{f:5,a:1,squash:1},insect:{f:16,a:1.5}
   const spr=c.isPlayer?playerFrames[frame]:((c.sprCache&&c.sprCache.ci===c.ci)?c.sprCache.f[frame]:(c.sprCache={ci:c.ci,f:[makeHero(c.ci,0,0,0),makeHero(c.ci,1,1,1),makeHero(c.ci,2,2,2)]}).f[frame]);
   ctx.fillStyle="rgba(10,8,16,0.5)";ctx.beginPath();ctx.ellipse(c.x,c.y+11,11,4,0,0,TAU);ctx.fill();
   ctx.save();ctx.translate(c.x,c.y);if(c.face<0)ctx.scale(-1,1);
+  if(c.hidden)ctx.globalAlpha=0.45; // маскировка в кустах
   ctx.drawImage(spr.sprite,-13,-13+bob,26,26);
   if(c.dmgFlash>0){ctx.globalAlpha=Math.min(0.8,c.dmgFlash*4);ctx.drawImage(spr.white,-13,-13+bob,26,26);ctx.globalAlpha=1;}
   ctx.restore();
@@ -2138,11 +2331,12 @@ const ANIM={beast:{f:9,a:2,waddle:1},blob:{f:5,a:1,squash:1},insect:{f:16,a:1.5}
  ctx.beginPath();ctx.arc(zone.curX,zone.curY,zone.curR+4,0,TAU);ctx.stroke();
  ctx.strokeStyle="rgba(220,228,240,0.3)";
  ctx.beginPath();ctx.arc(zone.tx,zone.ty,zoneTargetR(),0,TAU);ctx.stroke();ctx.setLineDash([]);
- // всплывающий текст с обводкой
+ // всплывающий текст с обводкой (шрифты кэшируются по размеру)
  ctx.textAlign="center";
  for(const f of floats){
   ctx.globalAlpha=1-f.t/0.8;
-  ctx.font=`bold ${f.sz}px monospace`;
+  const fs=fontCache[f.sz]||(fontCache[f.sz]=`bold ${f.sz}px monospace`);
+  ctx.font=fs;
   ctx.strokeStyle="rgba(0,0,0,0.85)";ctx.lineWidth=3;ctx.strokeText(f.txt,f.x,f.y);
   ctx.fillStyle=f.col;ctx.fillText(f.txt,f.x,f.y);
  }
@@ -2165,22 +2359,14 @@ const ANIM={beast:{f:9,a:2,waddle:1},blob:{f:5,a:1,squash:1},insect:{f:16,a:1.5}
  }
  if(vigOut>0){ctx.fillStyle=`rgba(80,140,255,${vigOut.toFixed(3)})`;ctx.fillRect(0,0,W,H);}
  if(vigHp>0||hurtFlash>0){ctx.fillStyle=`rgba(255,40,20,${Math.max(vigHp,hurtFlash*0.4).toFixed(3)})`;ctx.fillRect(0,0,W,H);}
- // цветокор биома + тёплый направленный свет + виньетка
+ // цветокор биома + кэшированный свет/виньетка (без createRadialGradient каждый кадр)
  if(player){
   const bi=biomeAt(Math.floor(player.x/TILE),Math.floor(player.y/TILE));
   const GRADE={1:["#7fae5a",0.05],2:["#4a7a3e",0.10],3:["#e8c070",0.06],4:["#a8c4e8",0.08],5:["#ff6a30",0.06],6:["#ff6a30",0.10]}[bi];
   if(GRADE){ctx.globalCompositeOperation="overlay";ctx.globalAlpha=GRADE[1];
    ctx.fillStyle=GRADE[0];ctx.fillRect(0,0,W,H);ctx.globalAlpha=1;ctx.globalCompositeOperation="source-over";}
  }
- if(vigCv){
-  const lg=ctx.createRadialGradient(W*0.25,H*0.15,0,W*0.25,H*0.15,Math.max(W,H)*0.9);
-  lg.addColorStop(0,"rgba(255,228,160,0.10)");
-  lg.addColorStop(0.55,"rgba(255,228,160,0.03)");
-  lg.addColorStop(1,"rgba(20,30,55,0.12)");
-  ctx.globalCompositeOperation="overlay";ctx.fillStyle=lg;ctx.fillRect(0,0,W,H);
-  ctx.globalCompositeOperation="source-over";
-  ctx.drawImage(vigCv,0,0);
- }
+ if(vigCv)ctx.drawImage(vigCv,0,0);
  // стрелка: к следующему кругу, если игрок вне него; иначе к текущему центру
  if(player&&!player.dead){
   const outsideTarget=dist2(player.x,player.y,zone.tx,zone.ty)>zoneTargetR()*zoneTargetR();
@@ -2201,6 +2387,13 @@ const playerFramesOld=null; // заменено на makeHero-кадры выш�
 function buildVignette(){
  vigCv=document.createElement("canvas");vigCv.width=W;vigCv.height=H;
  const g=vigCv.getContext("2d");
+ // тёплый свет из верхнего левого угла
+ const lg=g.createRadialGradient(W*0.25,H*0.15,0,W*0.25,H*0.15,Math.max(W,H)*0.9);
+ lg.addColorStop(0,"rgba(255,228,160,0.10)");
+ lg.addColorStop(0.55,"rgba(255,228,160,0.03)");
+ lg.addColorStop(1,"rgba(20,30,55,0.12)");
+ g.fillStyle=lg;g.fillRect(0,0,W,H);
+ // виньетка поверх
  const grd=g.createRadialGradient(W/2,H/2,Math.min(W,H)*0.36,W/2,H/2,Math.max(W,H)*0.72);
  grd.addColorStop(0,"rgba(8,6,16,0)");
  grd.addColorStop(1,"rgba(8,6,16,0.42)");
