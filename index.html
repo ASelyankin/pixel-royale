@@ -2116,12 +2116,17 @@ function netSend(obj,exclude){
 }
 function handleNet(raw,conn){
  let d;try{d=JSON.parse(raw);}catch(e){return;}
- if(d.t==="welcome"){ // клиент получил сид хоста — стартуем тот же мир
+ if(d.t==="welcome"){ // клиент получил сид хоста — стартуем тот же мир РЯДОМ С ХОСТОМ
   matchStartedViaNet=true;
   netStatus("Вы в мире! Враги и боты локальные.");
+  showNetChip("МИР "+net.code+" · подключён к хосту");
   document.getElementById("startmodal").style.display="none";
   initAudio();startMatch(d.seed);netMode=true;
   player.name="Гость-"+(10+Math.floor(Math.random()*89));
+  // спавн рядом с хостом, чтобы сразу увидеть друг друга
+  player.x=clamp(d.hx+40,3*TILE,WORLD-3*TILE);player.y=clamp(d.hy+40,3*TILE,WORLD-3*TILE);
+  cam.x=player.x;cam.y=player.y;
+  addFeed("Вы в мире хоста — он рядом с вами!",true);
   return;
  }
  if(d.t==="p"){
@@ -2140,8 +2145,10 @@ document.getElementById("hostbtn").onclick=()=>{
  player.name="ХОСТ";
  sfx("click");
  netStatus("Матч идёт — мир станет доступен друзьям, когда подключится сеть");
+ startHostPeer(makeCode(),1);
+};
+function startHostPeer(code,attempt){
  loadPeer(()=>{
-  const code=makeCode();
   const peer=new Peer("pxr-"+code,PEER_OPTS);
   net={peer,isHost:true,conns:[],code};
   const chipUpd=()=>showNetChip("КОД МИРА: "+code+" · подключились: "+(net.conns.length+1)+" · не закрывай игру!");
@@ -2152,13 +2159,19 @@ document.getElementById("hostbtn").onclick=()=>{
   });
   peer.on("connection",conn=>{
    net.conns.push(conn);
-   conn.on("open",()=>{conn.send(JSON.stringify({t:"welcome",seed:SEED}));addFeed("Игрок подключился к миру!",true);chipUpd();});
+   conn.on("open",()=>{conn.send(JSON.stringify({t:"welcome",seed:SEED,hx:Math.round(player.x),hy:Math.round(player.y)}));addFeed("Игрок подключился к миру!",true);chipUpd();});
    conn.on("data",d=>handleNet(d,conn));
    conn.on("close",()=>{net.conns=net.conns.filter(c2=>c2!==conn);chipUpd();});
   });
   peer.on("error",e=>{
-   netStatus("Сеть недоступна ("+e.type+") — играешь один, мир только для себя");
-   hideNetChip();
+   if((e.type==="network"||e.type==="server-error")&&attempt<3){ // сеть моргнула — переподключаем мир, игра продолжает работать
+    netStatus("Сеть моргнула — переподключаю мир... попытка "+(attempt+1)+"/3");
+    try{peer.destroy();}catch(x){}
+    setTimeout(()=>startHostPeer(code,attempt+1),2500);
+   }else{
+    netStatus("Сеть недоступна ("+e.type+") — играешь один, мир только для себя");
+    hideNetChip();
+   }
   });
  });
 };
@@ -2167,13 +2180,23 @@ document.getElementById("joinbtn").onclick=()=>{
  if(!code){netStatus("Введи код мира");return;}
  initAudio();sfx("click");
  // можно входить и во время своего матча — выходим из него
- gameOn=false;paused=false;matchEnded=true;
+ gameOn=false;paused=false;matchEnded=false;
  if(player)player.dead=true;
- netStatus("Подключаюсь к "+code+"... (до 15 секунд)");
+ joinWorldWithRetry(code,1);
+};
+function joinWorldWithRetry(code,attempt){
+ if(attempt>3){netStatus("Не удалось подключиться после 3 попыток — сигнальный сервер недоступен из вашей сети. Попробуйте мобильный интернет.");return;}
+ netStatus("Подключаюсь к "+code+"... попытка "+attempt+"/3");
  loadPeer(()=>{
   const peer=new Peer(PEER_OPTS);
   net={peer,isHost:false,conns:[],code};netMode=true;
-  let opened=false;
+  let opened=false,done=false;
+  const giveUp=msg=>{if(done)return;done=true;
+   if(attempt<3){netStatus(msg+" — попытка "+(attempt+1)+"/3...");
+    setTimeout(()=>joinWorldWithRetry(code,attempt+1),2000);}
+   else netStatus(msg+". Сигнальный сервер недоступен из вашей сети — попробуйте другую сеть (Wi-Fi/мобильный).");
+   try{peer.destroy();}catch(e){}
+  };
   peer.on("open",()=>{
    netStatus("Ищу мир "+code+"...");
    const conn=peer.connect("pxr-"+code,{reliable:true});
@@ -2183,16 +2206,18 @@ document.getElementById("joinbtn").onclick=()=>{
     netStatus("Подключено! Получаю мир от хоста...");
     conn.send(JSON.stringify({t:"p",n:"Гость",x:0,y:0,lv:1,hp:100,h:0}));
    });
-   conn.on("data",d=>handleNet(d,conn));
-   conn.on("close",()=>{netStatus("Хост вышел из игры");remotes.clear();});
+   conn.on("data",d=>{done=true;handleNet(d,conn);});
+   conn.on("close",()=>{if(!done){done=true;netStatus("Хост вышел из игры");remotes.clear();}});
   });
-  peer.on("error",e=>{netStatus(friendlyPeerError(e.type));});
-  // если за 15 секунд мир не найден — понятное сообщение
-  setTimeout(()=>{
-   if(!opened&&!matchStartedViaNet)netStatus("Не удалось подключиться. Проверь: код верный? у хоста игра открыта? обе стороны в интернете?");
-  },15000);
+  peer.on("error",e=>{
+   if(!opened&&!done&&(e.type==="network"||e.type==="server-error"))giveUp("Сеть моргнула");
+   else if(e.type==="peer-unavailable"){done=true;netStatus(friendlyPeerError(e.type));try{peer.destroy();}catch(x){}}
+   else if(!done)netStatus(friendlyPeerError(e.type));
+  });
+  // таймаут попытки
+  setTimeout(()=>{if(!opened&&!done)giveUp("Хост не отвечает");},12000);
  });
-};
+}
 let matchStartedViaNet=false;
 // рассылка своей позиции + отрисовка игроков из общего мира
 setInterval(()=>{
