@@ -2215,6 +2215,7 @@ function drawProps(){
 function render(){
  ctx.setTransform(1,0,0,1,0,0);
  ctx.fillStyle="#0b0d10";ctx.fillRect(0,0,W,H);
+ frameChunkBudget=3; // разрешаем строить до 3 чанков за кадр — земля догоняет движение
  if(!gameOn){drawMenuBackdrop();return;}
  const shx=(Math.random()-0.5)*shake,shy=(Math.random()-0.5)*shake;
  ctx.setTransform(ZOOM,0,0,ZOOM,Math.round(W/2-(cam.x+shx)*ZOOM),Math.round(H/2-(cam.y+shy)*ZOOM));
