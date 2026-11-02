@@ -129,12 +129,14 @@
   Зона сужается. Победи, оставшись последним!</p>
   <p class="stats" id="persist"></p>
   <button class="btn" id="startbtn">В БОЙ (одному)</button>
-  <p class="stats" style="margin-top:14px">— или общий мир с друзьями (WebRTC, без сервера):<br>
+  <p class="stats" style="margin-top:14px">— или общий мир с другом (WebRTC, без сервера):<br>
+  <b>Шаг 1:</b> один жмёт «Создать мир» и диктует код.<br>
+  <b>Шаг 2:</b> второй вводит код и жмёт «Войти» — ДО своего матча. Хост не закрывает игру!<br>
   <button class="btn" id="hostbtn" style="font-size:12px;padding:6px 12px">Создать мир</button>
-  <input id="joincode" placeholder="КОД" maxlength="5" style="width:80px;background:#241c12;border:1px solid #6b5a3e;color:#ffe9a8;font-family:inherit;font-weight:bold;padding:6px;text-align:center;letter-spacing:2px">
+  <input id="joincode" placeholder="КОД" maxlength="5" style="width:80px;background:#241c12;border:1px solid #6b5a3e;color:#ffe9a8;font-family:inherit;font-weight:bold;padding:6px;text-align:center;letter-spacing:2px;text-transform:uppercase">
   <button class="btn" id="joinbtn" style="font-size:12px;padding:6px 12px">Войти по коду</button><br>
   <span id="netstatus" style="color:#8de04a"></span><br>
-  <span style="color:#8a8272">Одинаковая карта и зона для всех; враги и боты у каждого свои.</span></p>
+  <span style="color:#8a8272">Карта и зона общие; враги и боты у каждого свои. Соединение напрямую между браузерами.</span></p>
 </div></div>
 
 <script>
@@ -2074,6 +2076,19 @@ function loadPeer(cb){
  s.onload=cb;s.onerror=()=>netStatus("⚠ Нет сети для онлайна");document.head.appendChild(s);
 }
 function makeCode(){const abc="ABCDEFGHJKMNPQRSTUVWXYZ23456789";let s="";for(let i=0;i<5;i++)s+=abc[Math.floor(Math.random()*abc.length)];return s;}
+const PEER_OPTS={config:{iceServers:[
+ {urls:"stun:stun.l.google.com:19302"},
+ {urls:"stun:stun1.l.google.com:19302"},
+ {urls:"stun:stun.cloudflare.com:3478"},
+ {urls:"stun:stun.miwifi.com:3478"}
+]},debug:0};
+function friendlyPeerError(t){
+ if(t==="peer-unavailable")return "Мир с таким кодом не найден. Проверь код — и что у хоста игра ещё открыта.";
+ if(t==="network")return "Нет доступа к сети подписки. Попробуй другую сеть/Wi-Fi.";
+ if(t==="server-error")return "Сервер подписки недоступен. Попробуй позже или другую сеть.";
+ if(t==="browser-incompatible")return "Браузер не поддерживает WebRTC.";
+ return "Ошибка сети: "+t;
+}
 function netSend(obj){
  if(!net)return;const data=JSON.stringify(obj);
  if(net.isHost){for(const c of net.conns)if(c.open)c.send(data);}
@@ -2082,10 +2097,11 @@ function netSend(obj){
 function handleNet(raw,conn){
  let d;try{d=JSON.parse(raw);}catch(e){return;}
  if(d.t==="welcome"){ // клиент получил сид хоста — стартуем тот же мир
-  if(gameOn){netStatus("Матч уже идёт — мир пропущен");return;}
+  matchStartedViaNet=true;
   netStatus("Вы в мире! Враги и боты локальные.");
   document.getElementById("startmodal").style.display="none";
   initAudio();startMatch(d.seed);netMode=true;
+  player.name="Гость-"+(10+Math.floor(Math.random()*89));
   return;
  }
  if(d.t==="p"){
@@ -2099,22 +2115,26 @@ function handleNet(raw,conn){
 document.getElementById("hostbtn").onclick=()=>{
  initAudio();sfx("click");
  document.getElementById("startmodal").style.display="none";
- startMatch();netMode=true;remotes.clear(); // старт мгновенный, сеть подключается в фоне
+ netMode=true;remotes.clear();
+ startMatch();
+ player.name="ХОСТ";
+ sfx("click");
  netStatus("Матч идёт — мир станет доступен друзьям, когда подключится сеть");
  loadPeer(()=>{
   const code=makeCode();
-  const peer=new Peer("pxr-"+code);
+  const peer=new Peer("pxr-"+code,PEER_OPTS);
   net={peer,isHost:true,conns:[],code};
+  const chipUpd=()=>showNetChip("КОД МИРА: "+code+" · подключились: "+(net.conns.length+1)+" · не закрывай игру!");
   peer.on("open",()=>{
    netStatus("");
-   showNetChip("КОД МИРА: "+code+" — друзья вводят его у себя");
-   netTick=setInterval(()=>{if(gameOn)netSend({t:"z",x:Math.round(zone.curX),y:Math.round(zone.curY),r:Math.round(zone.curR),st:zone.stage});},1000);
+   chipUpd();
+   netTick=setInterval(()=>{if(gameOn){netSend({t:"z",x:Math.round(zone.curX),y:Math.round(zone.curY),r:Math.round(zone.curR),st:zone.stage});chipUpd();}},1000);
   });
   peer.on("connection",conn=>{
    net.conns.push(conn);
-   conn.on("open",()=>{conn.send(JSON.stringify({t:"welcome",seed:SEED}));addFeed("Игрок подключился к миру!",true);});
+   conn.on("open",()=>{conn.send(JSON.stringify({t:"welcome",seed:SEED}));addFeed("Игрок подключился к миру!",true);chipUpd();});
    conn.on("data",d=>handleNet(d,conn));
-   conn.on("close",()=>{net.conns=net.conns.filter(c2=>c2!==conn);});
+   conn.on("close",()=>{net.conns=net.conns.filter(c2=>c2!==conn);chipUpd();});
   });
   peer.on("error",e=>{
    netStatus("Сеть недоступна ("+e.type+") — играешь один, мир только для себя");
@@ -2125,21 +2145,35 @@ document.getElementById("hostbtn").onclick=()=>{
 document.getElementById("joinbtn").onclick=()=>{
  const code=(document.getElementById("joincode").value||"").trim().toUpperCase();
  if(!code){netStatus("Введи код мира");return;}
- initAudio();netStatus("Загрузка сети...");
+ initAudio();sfx("click");
+ // можно входить и во время своего матча — выходим из него
+ gameOn=false;paused=false;matchEnded=true;
+ if(player)player.dead=true;
+ netStatus("Подключаюсь к "+code+"... (до 15 секунд)");
  loadPeer(()=>{
-  const peer=new Peer();
+  const peer=new Peer(PEER_OPTS);
   net={peer,isHost:false,conns:[],code};netMode=true;
+  let opened=false;
   peer.on("open",()=>{
-   netStatus("Подключаюсь к "+code+"...");
+   netStatus("Ищу мир "+code+"...");
    const conn=peer.connect("pxr-"+code,{reliable:true});
    net.hostConn=conn;
-   conn.on("open",()=>{netStatus("Подключено!");conn.send(JSON.stringify({t:"p",n:"Гость",x:player?player.x:0,y:player?player.y:0,lv:1,hp:100,h:0}));});
+   conn.on("open",()=>{
+    opened=true;
+    netStatus("Подключено! Получаю мир от хоста...");
+    conn.send(JSON.stringify({t:"p",n:"Гость",x:0,y:0,lv:1,hp:100,h:0}));
+   });
    conn.on("data",d=>handleNet(d,conn));
    conn.on("close",()=>{netStatus("Хост вышел из игры");remotes.clear();});
   });
-  peer.on("error",e=>netStatus("Ошибка: "+e.type));
+  peer.on("error",e=>{netStatus(friendlyPeerError(e.type));});
+  // если за 15 секунд мир не найден — понятное сообщение
+  setTimeout(()=>{
+   if(!opened&&!matchStartedViaNet)netStatus("Не удалось подключиться. Проверь: код верный? у хоста игра открыта? обе стороны в интернете?");
+  },15000);
  });
 };
+let matchStartedViaNet=false;
 // рассылка своей позиции + отрисовка игроков из общего мира
 setInterval(()=>{
  if(net&&netMode&&gameOn&&player&&!player.dead)
