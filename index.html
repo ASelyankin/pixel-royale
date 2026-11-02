@@ -27,13 +27,19 @@
   #mbtns{position:absolute;left:50%;top:10px;transform:translateX(-50%);display:none;gap:10px;z-index:5;}
   #mbtns button{width:46px;height:38px;background:linear-gradient(180deg,#6b4a28,#3a2412);border:2px solid #1a1208;
    box-shadow:inset 0 0 0 1px #a87c3e,0 0 0 2px #000;color:#ffe9a8;font-size:17px;font-family:inherit;pointer-events:auto;}
+  #rotate{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+   background:rgba(0,0,0,.85);color:#ffe9a8;font-size:18px;z-index:99;pointer-events:none;text-align:center;}
+  @media (orientation:portrait) and (pointer:coarse){ #rotate{display:flex;} }
   @media (max-width:950px){
-   #hpwrap{width:180px;}
-   #minimap{width:104px;height:104px;right:8px;bottom:8px;}
+   #hpwrap{width:180px;left:calc(8px + env(safe-area-inset-left));top:calc(8px + env(safe-area-inset-top));}
+   #minimap{width:104px;height:104px;right:calc(8px + env(safe-area-inset-right));bottom:auto;top:calc(env(safe-area-inset-top) + 86px);}
    #feed{font-size:11px;max-width:230px;top:104px;}
-   #skillbar{bottom:8px;} .slot{width:44px;height:44px;}
-   .slot canvas{left:3px;top:3px;} #alive{font-size:14px;} #topright{font-size:11px;}
+   #skillbar{bottom:calc(8px + env(safe-area-inset-bottom));left:8px;transform:none;justify-content:flex-start;right:8px;}
+   .slot{width:48px;height:48px;}
+   .slot canvas{left:3px;top:3px;} #alive{font-size:14px;} #topright{font-size:11px;right:calc(8px + env(safe-area-inset-right));top:calc(8px + env(safe-area-inset-top));}
    #zoneinfo{font-size:11px;padding:2px 5px;}
+   #board{min-width:0;width:min(460px,92vw);}
+   .cards{flex-wrap:wrap;} .card{width:104px;}
   }
   #skillbar{left:50%;bottom:14px;transform:translateX(-50%);display:flex;gap:8px;pointer-events:none;}
   .slot{width:54px;height:54px;position:relative;pointer-events:auto;
@@ -90,7 +96,9 @@
 <div id="mbtns" class="panel">
   <button id="mbboard">👥</button>
   <button id="mbpause">⏸</button>
+  <button id="mbmute">🔊</button>
 </div>
+<div id="rotate">📱 Поверни телефон горизонтально —<br>так намного удобнее</div>
 
 <div id="topright" class="panel">
   <span id="netchip" style="display:none;background:rgba(10,8,6,.7);border:1px solid #000;box-shadow:0 0 0 1px #a87c3e;padding:3px 10px;color:#8de04a;font-size:13px"></span><br>
@@ -465,10 +473,11 @@ function rampColor2(pal,t){
  _rc2[0]=lerp(pal[i][0],pal[i+1][0],k);_rc2[1]=lerp(pal[i][1],pal[i+1][1],k);_rc2[2]=lerp(pal[i][2],pal[i+1][2],k);
  return _rc2;
 }
-const gbuf=new Uint8ClampedArray(256*256*4);
-const gimg=new ImageData(gbuf,256,256);
-const gcv=document.createElement("canvas");gcv.width=gcv.height=256;
-const terrGrid=new Float32Array(65*65),macGrid=new Float32Array(33*33);
+const gbuf=new Uint8ClampedArray(128*128*4); // половинное разрешение: земля всё равно 2×2-блоки — lossless, память ×¼
+const gimg=new ImageData(gbuf,128,128);
+const gcv=document.createElement("canvas");gcv.width=gcv.height=128;
+const gctx=gcv.getContext("2d");gctx.imageSmoothingEnabled=false;
+const macGrid=new Float32Array(33*33);
 const bGrid=new Uint8Array(144),distOther=new Float32Array(144),otherB=new Uint8Array(144),distLand=new Uint8Array(144);
 let terrN=null,macN=null;
 
@@ -700,11 +709,7 @@ const chunkCache=new Map();
 function renderChunk(cx,cy){
  const cv=document.createElement("canvas");cv.width=8*TILE;cv.height=8*TILE;
  const g=cv.getContext("2d");g.imageSmoothingEnabled=false;
- // --- сетки ---
- for(let gy=0;gy<=64;gy++)for(let gx=0;gx<=64;gx++){
-  const wx=cx*256+gx*4,wy=cy*256+gy*4;
-  terrGrid[gy*65+gx]=terrN(wx*0.03,wy*0.03,3)*0.5+0.5;
- }
+ // --- сетки макро/среднего шума ---
  for(let gy=0;gy<=32;gy++)for(let gx=0;gx<=32;gx++){
   const wx=cx*256+gx*8,wy=cy*256+gy*8;
   macGrid[gy*33+gx]=macN(wx*0.004,wy*0.004,2)*0.5+0.5;
@@ -728,20 +733,21 @@ function renderChunk(cx,cy){
   distLand[ty*12+tx]=b===BIOME.WATER?dl:9;
  }
  // --- земля: предрасчёт на тайл + дизер двух тонов на блок (быстрый чанк) ---
+ // чанк 128×128 (полразрешения), блок = 1 pxImageData = 2×2 мировых px
  const tR=new Float32Array(64),tG=new Float32Array(64),tB2=new Float32Array(64);
  const tR2=new Float32Array(64),tG2=new Float32Array(64),tB22=new Float32Array(64);
- const tMode=new Uint8Array(64),tSpark=new Uint8Array(64); // 0 обычный, 1 берег, 2 глубина, 3 лава
+ const tMode=new Uint8Array(64),tSpark=new Uint8Array(64);
  for(let iy=0;iy<8;iy++)for(let ix=0;ix<8;ix++){
   const tix=ix+2,tiy=iy+2,ti=iy*8+ix;
   const b=bGrid[tiy*12+tix];
-  const mg=midGrid[((iy*2)+1)*33+((ix*2)+1)];
-  const m=macGrid[((iy*2)+1)*33+((ix*2)+1)];
-  let v=terrGrid[((iy*4)+2)*65+((ix*4)+2)]+(mg-0.5)*0.12;
+  const mg=midGrid[((iy*4)+2)*33+((ix*4)+2)];
+  const m=macGrid[((iy*4)+2)*33+((ix*4)+2)];
+  const wxf=(cx*8+ix)*TILE+16,wyf=(cy*8+iy)*TILE+16; // мировые координаты центра тайла
+  let v=terrN(wxf*0.03,wyf*0.03,3)*0.5+0.5+(mg-0.5)*0.12;
   const mul=0.82+0.30*m;
   let r=0,gg=0,bb=0,r2=0,g2=0,b22=0,mode=0;
-  const wx=cx*256+ix*TILE+16,wy=cy*256+iy*TILE+16;
   if(b===BIOME.LAVA){
-   const n=lavaN(wx*0.02,wy*0.02,2)*0.5+0.5;
+   const n=lavaN(wxf*0.02,wyf*0.02,2)*0.5+0.5;
    if(n>0.62){r=70;gg=32;bb=20;}
    else if(n>0.5){r=242;gg=161;bb=60;}
    else{const c1=rampColor(BIOME_RGB[6],v),c2=rampColor2(BIOME_RGB[6],clamp(v+0.25,0,1));
@@ -779,10 +785,10 @@ function renderChunk(cx,cy){
   tR2[ti]=r2*mul;tG2[ti]=g2*mul;tB22[ti]=b22*mul;
   tMode[ti]=mode;
  }
- // --- блоки 2×2: только выбор тона + зерно (дёшево) ---
- for(let by=0;by<128;by++)for(let bx=0;bx<128;bx++){
-  const wx=cx*256+bx*2,wy=cy*256+by*2;
-  const ti=((by>>4)*8)+(bx>>4);
+ // --- блоки 2×2 мировых px = 1 пиксель чанка: только выбор тона + зерно ---
+ for(let by=0;by<64;by++)for(let bx=0;bx<64;bx++){
+  const wx=cx*128+bx*2,wy=cy*128+by*2;
+  const ti=((by>>3)*8)+(bx>>3);
   const bay=BAYER[(bx&3)|((by&3)<<2)];
   let r,gg,bb;
   const mode=tMode[ti];
@@ -791,14 +797,11 @@ function renderChunk(cx,cy){
   else if(mode===3){if(bay>11){r=tR2[ti];gg=tG2[ti];bb=tB22[ti];}else{r=tR[ti];gg=tG[ti];bb=tB2[ti];}}
   else{if(bay>7){r=tR2[ti];gg=tG2[ti];bb=tB22[ti];}else{r=tR[ti];gg=tG[ti];bb=tB2[ti];}}
   const gr=GRAIN[((wy&63)<<6)|(wx&63)];
-  const o=((by*2)*256+bx*2)*4;
-  for(let sy=0;sy<2;sy++)for(let sx=0;sx<2;sx++){
-   const o2=o+sy*256*4+sx*4;
-   gbuf[o2]=r+gr;gbuf[o2+1]=gg+gr;gbuf[o2+2]=bb+gr;gbuf[o2+3]=255;
-  }
+  const o=((by*128)+bx)*4;
+  gbuf[o]=r+gr;gbuf[o+1]=gg+gr;gbuf[o+2]=bb+gr;gbuf[o+3]=255;
  }
- gcv.getContext("2d").putImageData(gimg,0,0);
- g.drawImage(gcv,0,0);
+ gctx.putImageData(gimg,0,0);
+ g.drawImage(gcv,0,0,8*TILE,8*TILE);
  // --- декали ---
  for(let iy=0;iy<8;iy++)for(let ix=0;ix<8;ix++){
   const tx=cx*8+ix,ty=cy*8+iy;
@@ -1670,6 +1673,13 @@ function updateProjs(dt){
 function screenToWorld(sx,sy){return {x:cam.x+(sx-W/2)/ZOOM,y:cam.y+(sy-H/2)/ZOOM};}
 function castSlot(i){
  if(!gameOn||paused||!player||!player.skills[i]||player.cds[i]>0)return;
+ // на сенсоре скил без активного прицела целится в ближайшего врага вообще, иначе — по направлению взгляда
+ if(TOUCH&&aimId===null){
+  let best=null,bd=Infinity;
+  for(const e of enemies){const d=dist2(e.x,e.y,player.x,player.y);if(d<bd){bd=d;best=e;}}
+  if(best){mouse.x=(best.x-cam.x)*ZOOM+W/2;mouse.y=(best.y-cam.y)*ZOOM+H/2;}
+  else{mouse.x=W/2+player.face*120;mouse.y=H/2;}
+ }
  const wm=screenToWorld(mouse.x,mouse.y);
  castSkill(player,player.skills[i],wm.x,wm.y);
  player.cds[i]=player.skills[i].cd*(1-player.stat.cdr);
@@ -1702,6 +1712,12 @@ const TOUCH="ontouchstart" in window;
 const joy={id:null,bx:0,by:0,dx:0,dy:0};
 let aimId=null,boardOn=false;
 canvas.style.touchAction="none";
+function joyDeadzone(){ // мёртвая зона с плавным выходом: дрожь пальца не двигает героя
+ const l=Math.hypot(joy.dx,joy.dy),DZ=0.22;
+ if(l<DZ){joy.dx=0;joy.dy=0;return;}
+ const k=(l-DZ)/(1-DZ)/l;
+ joy.dx*=k;joy.dy*=k;
+}
 canvas.addEventListener("pointerdown",e=>{
  if(e.pointerType==="mouse"){if(e.button===0)mouse.down=true;return;}
  e.preventDefault();
@@ -1711,11 +1727,11 @@ canvas.addEventListener("pointerdown",e=>{
 addEventListener("pointermove",e=>{
  if(e.pointerId===joy.id){
   const dx=e.clientX-joy.bx,dy=e.clientY-joy.by,l=Math.hypot(dx,dy)||1,m=Math.min(1,l/48);
-  joy.dx=dx/l*m;joy.dy=dy/l*m;
+  joy.dx=dx/l*m;joy.dy=dy/l*m;joyDeadzone();
  }else if(e.pointerId===aimId){
   mouse.x=e.clientX;mouse.y=e.clientY;
-  // автодоводка прицела к ближайшему врагу в 60px на экране
-  let best=null,bd=60*60;
+  // автодоводка прицела к ближайшему врагу (радиус 22% меньшей стороны)
+  let best=null,bd=(Math.min(W,H)*0.22)**2;
   for(const en of enemies){
    const sx2=(en.x-cam.x)*ZOOM+W/2,sy2=(en.y-cam.y)*ZOOM+H/2;
    const d2=(sx2-e.clientX)*(sx2-e.clientX)+(sy2-e.clientY)*(sy2-e.clientY);
@@ -1738,6 +1754,9 @@ document.getElementById("mbpause").addEventListener("pointerdown",e=>{
 });
 document.getElementById("mbboard").addEventListener("pointerdown",e=>{
  e.preventDefault();boardOn=!boardOn;showBoard(boardOn);
+});
+document.getElementById("mbmute").addEventListener("pointerdown",e=>{
+ e.preventDefault();muted=!muted;e.currentTarget.textContent=muted?"🔇":"🔊";addFeed(muted?"Звук выключен":"Звук включён");
 });
 document.getElementById("resumebtn").addEventListener("click",()=>{
  paused=false;document.getElementById("pausemodal").style.display="none";
@@ -2043,7 +2062,8 @@ function startMatch(forceSeed){
  const bi=biomeAt(Math.floor(player.x/TILE),Math.floor(player.y/TILE));
  addFeed("Битва началась! 50 бойцов на карте.",true);
  addFeed("Ты в биоме: "+BIOME_RU[bi]);
- for(let i=0;i<80;i++)spawnEnemy();
+ if(TOUCH){addFeed("Левый палец — движение, правый — стрельба",true);addFeed("Тап по слоту = скил по ближайшему врагу");}
+ for(let i=0;i<(TOUCH?55:80);i++)spawnEnemy();
  // прогрев чанков вокруг игрока — без стартового заикания
  const pcx=Math.floor(player.x/TILE/8),pcy=Math.floor(player.y/TILE/8);
  for(let oy=-2;oy<=2;oy++)for(let ox=-2;ox<=2;ox++){
@@ -2089,9 +2109,9 @@ function friendlyPeerError(t){
  if(t==="browser-incompatible")return "Браузер не поддерживает WebRTC.";
  return "Ошибка сети: "+t;
 }
-function netSend(obj){
+function netSend(obj,exclude){
  if(!net)return;const data=JSON.stringify(obj);
- if(net.isHost){for(const c of net.conns)if(c.open)c.send(data);}
+ if(net.isHost){for(const c of net.conns)if(c.open&&c!==exclude)c.send(data);}
  else if(net.hostConn&&net.hostConn.open)net.hostConn.send(data);
 }
 function handleNet(raw,conn){
@@ -2105,8 +2125,8 @@ function handleNet(raw,conn){
   return;
  }
  if(d.t==="p"){
-  if(net&&net.isHost&&conn.peer)netSend(d); // хост ретранслирует позиции всем
-  remotes.set(conn.peer||("r"+d.n),{x:d.x,y:d.y,name:d.n,lv:d.lv,hp:d.hp,hid:d.h,t:performance.now()});
+  if(net&&net.isHost){netSend(d,conn);remotes.set(conn.peer,{x:d.x,y:d.y,name:d.n,lv:d.lv,hp:d.hp,hid:d.h,t:performance.now()});}
+  else if(d.n!==player.name)remotes.set(d.n,{x:d.x,y:d.y,name:d.n,lv:d.lv,hp:d.hp,hid:d.h,t:performance.now()}); // эхо игнорируем
  }
  if(d.t==="z"){ // зона синхронизируется хостом
   zone.curX=d.x;zone.curY=d.y;zone.curR=d.r;zone.stage=d.st;
@@ -2206,7 +2226,8 @@ buildMinimap();
 buildVignette();
 
 // ---------- главный цикл ----------
-let lastT=0,lastFrameT=0,renderBroken=false;
+let lastT=0,lastFrameT=0,renderBroken=false,lastRaf=0;
+const FRAME_MIN=TOUCH?33:0; // на тач-устройствах 30fps — батарея и запас производительности
 function loopStep(t){
  try{
   let dt=Math.max(0,Math.min(0.05,(t-lastT)/1000||0.016));lastT=t;lastFrameT=performance.now();
@@ -2222,10 +2243,19 @@ function loopStep(t){
  }
 }
 function addFeedSafe(t){try{addFeed(t,true);}catch(e){}}
-function loop(t){loopStep(t);requestAnimationFrame(loop);}
+function loop(t){requestAnimationFrame(loop);
+ if(FRAME_MIN&&t-lastRaf<FRAME_MIN-1)return; // 90/120Гц-экраны: пропускаем кадры до 30fps
+ lastRaf=t;loopStep(t);}
 requestAnimationFrame(loop);
 // самовосстановление: если rAF-цикл умер (упал до фикса), интервал оживляет игру и на видимой вкладке
 setInterval(()=>{if(performance.now()-lastFrameT>600)loopStep(performance.now());},300);
+// мобильные ритуалы: автопауза при сворачивании, будим звук
+document.addEventListener("visibilitychange",()=>{
+ if(document.hidden&&gameOn&&!paused&&!matchEnded&&pendingPerks===0){paused=true;
+  document.getElementById("pausemodal").style.display="flex";}
+ if(AC&&AC.state==="suspended")AC.resume();
+ if(nextNote!==undefined&&AC)nextNote=AC.currentTime+0.1;
+});
 
 function update(dt){
  if(!gameOn||paused){shake=Math.max(0,shake-dt*30);return;}
@@ -2292,10 +2322,12 @@ function drawProps(){
    ctx.fillStyle="rgba(15,12,24,0.30)";
    ctx.beginPath();ctx.ellipse(bx+3,by+3,cw*0.32,4,0,0,TAU);ctx.fill();
   }
-  // покачивание: деревья и кусты качаются от ветра; удар добавляет тряску
+  // покачивание: деревья и кусты качаются от ветра (на сенсоре отключено — экономия), удар добавляет тряску
   let rot=0;
-  if(t===1||t===11||t===2||t===9)rot=Math.sin(matchTime*1.6+tx2*1.7+ty2*0.9)*0.018;
-  else if(t===5)rot=Math.sin(matchTime*2.1+tx2*1.3)*0.01;
+  if(!TOUCH){
+   if(t===1||t===11||t===2||t===9)rot=Math.sin(matchTime*1.6+tx2*1.7+ty2*0.9)*0.018;
+   else if(t===5)rot=Math.sin(matchTime*2.1+tx2*1.3)*0.01;
+  }
   const hp=treeHp.get(tkey(tx2,ty2));
   if(hp&&hp.shakeT>0)rot+=(Math.random()-0.5)*0.14*(hp.shakeT/0.4);
   if(rot){ctx.save();ctx.translate(bx,by);ctx.rotate(rot);ctx.drawImage(img,-img.width/2,-img.height+2);ctx.restore();}
@@ -2314,7 +2346,7 @@ function render(){
  const y0=Math.floor((cam.y-H/2/ZOOM)/TILE/8)-0.5,y1=Math.floor((cam.y+H/2/ZOOM)/TILE/8)+0.5;
  for(let cy=Math.max(0,y0|0);cy<=Math.min(MAPH/8-1,y1|0);cy++)
   for(let cx=Math.max(0,x0|0);cx<=Math.min(MAPW/8-1,x1|0);cx++)
-   ctx.drawImage(getChunk(cx,cy),cx*8*TILE,cy*8*TILE);
+   ctx.drawImage(getChunk(cx,cy),cx*8*TILE,cy*8*TILE,8*TILE,8*TILE); // 128-канвас растягиваем ×2, nearest — пиксель тот же
  drawProps();
  drawRemotes();
  // дропы скилов с телеграфом (светящийся столб света)
@@ -2351,8 +2383,10 @@ function render(){
 // анимация по форме: частота, амплитуда, приседание, дрейф
 const ANIM={beast:{f:9,a:2,waddle:1},blob:{f:5,a:1,squash:1},insect:{f:16,a:1.5},
  humanoid:{f:8,a:2},golem:{f:3,a:2.5},spirit:{f:4,a:3.5,drift:1},flyer:{f:13,a:2.5}};
- // враги
+ // враги (куллинг по вьюпорту)
+ const vx0=cam.x-W/2/ZOOM-48,vx1=cam.x+W/2/ZOOM+48,vy0=cam.y-H/2/ZOOM-48,vy1=cam.y+H/2/ZOOM+48;
  for(const e of enemies){
+  if(e.x<vx0||e.x>vx1||e.y<vy0||e.y>vy1)continue;
   const an=ANIM[e.t.shape]||{f:8,a:2};
   const ph=e.x*0.13+e.y*0.07;
   const sc=(0.75+e.t.tier*0.15)*e.t.szMul;
@@ -2379,9 +2413,10 @@ const ANIM={beast:{f:9,a:2,waddle:1},blob:{f:5,a:1,squash:1},insect:{f:16,a:1.5}
    ctx.beginPath();ctx.ellipse(e.x,e.y+e.r*0.7,sz*0.45,4,0,0,TAU);ctx.stroke();}
   if(e.hp<e.maxhp)drawBar(e.x-12,e.y-e.r-10,24,clamp(e.hp/e.maxhp,0,1),"#d24a3a");
  }
- // персонажи
+ // персонажи (куллинг: ботов за экраном не рисуем)
  for(const c of chars){
   if(c.dead)continue;
+  if(!c.isPlayer&&(c.x<vx0||c.x>vx1||c.y<vy0||c.y>vy1))continue;
   const bob=c.moving?Math.sin(c.walkT)*1.5:(Math.sin(matchTime*3+c.x)>0?0:-1);
   const frame=c.moving?(c.walkT*2|0)%2:2;
   const spr=c.isPlayer?playerFrames[frame]:((c.sprCache&&c.sprCache.ci===c.ci)?c.sprCache.f[frame]:(c.sprCache={ci:c.ci,f:[makeHero(c.ci,0,0,0),makeHero(c.ci,1,1,1),makeHero(c.ci,2,2,2)]}).f[frame]);
@@ -2411,25 +2446,33 @@ const ANIM={beast:{f:9,a:2,waddle:1},blob:{f:5,a:1,squash:1},insect:{f:16,a:1.5}
   }
   ctx.globalAlpha=1;ctx.lineCap="butt";
  }
- // снаряды: хвост + lighter-глоу; своё/чужое/опасное различаются с первого взгляда
+ // снаряды: глоу одним lighter-блоком, затем ядра; своё/чужое/опасное различаются
+ const glowCache=window._glowCache||(window._glowCache={});
+ function glowSpr(col){let g=glowCache[col];if(g)return g;
+  const c=document.createElement("canvas");c.width=c.height=32;const q=c.getContext("2d");
+  const hcol=col.length===7?col:"#ffffff";
+  const rr2=q.createRadialGradient(16,16,1,16,16,16);
+  rr2.addColorStop(0,hcol);rr2.addColorStop(1,"rgba(0,0,0,0)");
+  q.fillStyle=rr2;q.fillRect(0,0,32,32);return glowCache[col]=c;}
+ ctx.globalCompositeOperation="lighter";
+ for(const p of projs){
+  const mine=p.owner===player,col=mine?"#ffd76a":p.col,gr=glowSpr(col);
+  for(let k=1;k<=3;k++){
+   const q=p.trail[p.trail.length-k*2];if(!q)break;
+   ctx.globalAlpha=0.3-0.08*k;
+   ctx.drawImage(gr,q.x-p.r*1.7,q.y-p.r*1.7,p.r*3.4,p.r*3.4);
+  }
+  ctx.globalAlpha=0.3;
+  ctx.drawImage(gr,p.x-p.r*2.2,p.y-p.r*2.2,p.r*4.4,p.r*4.4);
+ }
+ ctx.globalCompositeOperation="source-over";
  for(const p of projs){
   const mine=p.owner===player,hostile=p.owner&&p.owner.t;
   if(hostile&&p.t<0.08&&p.sx!==undefined){
    ctx.strokeStyle="rgba(255,136,102,0.5)";ctx.lineWidth=1;
    ctx.beginPath();ctx.moveTo(p.sx,p.sy);ctx.lineTo(p.x,p.y);ctx.stroke();
   }
-  const col=mine?"#ffd76a":p.col;
-  ctx.globalCompositeOperation="lighter";
-  for(let k=1;k<=3;k++){
-   const q=p.trail[p.trail.length-k*2];if(!q)break;
-   ctx.globalAlpha=0.3-0.08*k;ctx.fillStyle=col;
-   ctx.beginPath();ctx.arc(q.x,q.y,p.r*(1.7-0.35*k),0,TAU);ctx.fill();
-  }
-  ctx.globalAlpha=0.12;ctx.fillStyle=col;
-  ctx.beginPath();ctx.arc(p.x,p.y,p.r*2.2,0,TAU);ctx.fill();
-  ctx.globalAlpha=0.25;ctx.beginPath();ctx.arc(p.x,p.y,p.r*1.4,0,TAU);ctx.fill();
-  ctx.globalCompositeOperation="source-over";
-  ctx.globalAlpha=hostile?0.9:1;ctx.fillStyle=col;
+  ctx.globalAlpha=hostile?0.9:1;ctx.fillStyle=mine?"#ffd76a":p.col;
   ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,TAU);ctx.fill();
   ctx.fillStyle="#fff";ctx.beginPath();ctx.arc(p.x,p.y,p.r*0.45,0,TAU);ctx.fill();
   ctx.globalAlpha=1;
